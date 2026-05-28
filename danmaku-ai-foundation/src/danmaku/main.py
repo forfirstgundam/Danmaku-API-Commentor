@@ -37,8 +37,15 @@ class DanmakuApp:
 
     def __init__(self, settings: AppSettings) -> None:
         self.settings = settings
+        # S: rewritten whole/canonical summary.
         self.previous_summary = ""
-        self.summary_history: list[str] = []
+
+        # T history: recent current-situation snapshots only.
+        self.situation_history: list[str] = []
+
+        # Optional debug: old rewritten summaries.
+        self.summary_versions: list[str] = []
+
         self.is_running = False
         self.is_busy = False
 
@@ -120,55 +127,33 @@ class DanmakuApp:
         """
         Build context sent to the LLM.
 
-        Includes:
-        - rolling summary of the overall situation
-        - last 4 scene summaries
+        Sends:
+        - S(n-1): previous rewritten whole summary
+        - recent T snapshots: current_situation from recent captures
         """
 
         parts: list[str] = []
 
         if self.previous_summary:
             parts.append(
-                "Overall context so far:\n"
+                "Previous whole summary S(n-1):\n"
                 f"{self.previous_summary}"
             )
 
-        recent = self.summary_history[-4:]
+        recent_situations = self.situation_history[-3:]
 
-        if recent:
+        if recent_situations:
             recent_text = "\n".join(
-                f"{index + 1}. {summary}"
-                for index, summary in enumerate(recent)
+                f"T-{len(recent_situations) - index}: {situation}"
+                for index, situation in enumerate(recent_situations)
             )
 
             parts.append(
-                "Recent scene history, oldest to newest:\n"
+                "Recent current-situation snapshots, oldest to newest:\n"
                 f"{recent_text}"
             )
 
         return "\n\n".join(parts)
-
-    def _build_rolling_summary(self) -> str:
-        """
-        Build a bounded rolling summary from recent scene summaries.
-
-        This is not perfect semantic compression, but it keeps enough continuity
-        without sending unlimited history.
-        """
-
-        recent = self.summary_history[-8:]
-
-        if not recent:
-            return ""
-
-        joined = " ".join(recent)
-
-        max_chars = 1200
-
-        if len(joined) <= max_chars:
-            return joined
-
-        return joined[-max_chars:]
 
     def _trigger_capture_and_api(self) -> None:
         if not self.is_running or self.is_busy:
@@ -192,11 +177,13 @@ class DanmakuApp:
 
             api_started = time.perf_counter()
             context_for_api = self._build_context_summary()
+            summary_before_request = self.previous_summary
+            situations_before_request = self.situation_history[-3:]
 
             print(
                 "[context] "
-                f"rolling_summary_chars={len(self.previous_summary)}, "
-                f"history_count={len(self.summary_history)}, "
+                f"summary_chars={len(self.previous_summary)}, "
+                f"situation_count={len(self.situation_history)}, "
                 f"context_sent_chars={len(context_for_api)}"
             )
 
@@ -227,6 +214,9 @@ class DanmakuApp:
                     "batch": batch,
                     "metrics": metrics,
                     "context_sent": context_for_api,
+                    "summary_before_request": summary_before_request,
+                    "situations_before_request": situations_before_request,
+
                 }
             )
 
@@ -235,12 +225,15 @@ class DanmakuApp:
 
     def _on_comments_ready(self, payload: object) -> None:
         self.is_busy = False
-
+        
         data = payload if isinstance(payload, dict) else {}
+
         frame = data.get("frame")
         batch = data.get("batch")
         metrics = data.get("metrics", {})
         context_sent = data.get("context_sent", "")
+        summary_before_request = data.get("summary_before_request", "")
+        situations_before_request = data.get("situations_before_request", [])
 
         if not isinstance(frame, CaptureFrame):
             print("[app] invalid frame payload")
@@ -257,27 +250,38 @@ class DanmakuApp:
         if batch.summary:
             clean_summary = batch.summary.strip()
 
-            self.summary_history.append(clean_summary)
-            self.summary_history = self.summary_history[-8:]
+            # S(n): rewritten whole summary replaces S(n-1)
+            self.previous_summary = clean_summary
 
-            self.previous_summary = self._build_rolling_summary()
+            # Keep old S versions only for debugging/logging.
+            self.summary_versions.append(clean_summary)
+            self.summary_versions = self.summary_versions[-8:]
 
-            print(
-                "[context] updated: "
-                f"history_count={len(self.summary_history)}, "
-                f"rolling_summary_chars={len(self.previous_summary)}"
-            )
+        if batch.current_situation:
+            clean_situation = batch.current_situation.strip()
+
+            # T(n): current situation snapshot is appended to recent T history.
+            self.situation_history.append(clean_situation)
+            self.situation_history = self.situation_history[-4:]
+
+        print(
+            "[context] updated: "
+            f"summary_chars={len(self.previous_summary)}, "
+            f"situation_count={len(self.situation_history)}"
+        )
 
         self.overlay.add_comment_batch(batch)
 
         if self.settings.save_comments:
-            self._save_comment_batch(frame, batch, metrics, context_sent)
+            self._save_comment_batch(frame, batch, metrics, context_sent, summary_before_request, situations_before_request)
 
     def _save_comment_batch(self,
                             frame: CaptureFrame,
                             batch: CommentBatch,
                             metrics: dict | None = None,
                             context_sent: str = "",
+                            summary_before_request: str = "",
+                            situations_before_request: list[str] | None = None,
                             ) -> None:
         self.settings.comment_log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path = self.settings.comment_log_path   
@@ -287,11 +291,23 @@ class DanmakuApp:
             "capture_timestamp": frame.timestamp,
             "image_path": str(frame.image_path),
             "ocr_text": frame.ocr_text,
+
             "comments": batch.comments,
             "long_comments": batch.long_comments,
-            "summary": batch.summary,
-            "summary_history": self.summary_history[-4:],
+
+            # What was sent before this response.
+            "summary_before_request": summary_before_request,
+            "situations_before_request": situations_before_request or [],
             "context_sent": context_sent,
+
+            # What was received from this response.
+            "summary": batch.summary,
+            "current_situation": batch.current_situation,
+
+            # Debug state after update.
+            "summary_versions": self.summary_versions[-3:],
+            "situation_history": self.situation_history[-3:],
+
             "used_dummy_api": self.settings.use_dummy_api,
             "model": self.settings.model_name,
             "timing": metrics or {},

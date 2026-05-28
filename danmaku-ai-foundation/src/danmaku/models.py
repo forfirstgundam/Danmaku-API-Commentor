@@ -33,7 +33,7 @@ class AppSettings:
     font_family: str = "Malgun Gothic"
     font_size: int = 20
 
-    # More vertical space for comments.
+    # Vertical space for comments.
     overlay_top_ratio: float = 0.03
     overlay_bottom_ratio: float = 0.36
 
@@ -68,9 +68,13 @@ class CommentBatch:
 
     comments: list[str] = field(default_factory=list)
     long_comments: list[str] = field(default_factory=list)
+
+    # S: rewritten whole/canonical summary.
     summary: str = ""
 
-    # True means this batch should not be displayed.
+    # T: short factual snapshot of the current capture only.
+    current_situation: str = ""
+
     is_error: bool = False
     error_message: str = ""
 
@@ -80,6 +84,7 @@ class CommentBatch:
             comments=[],
             long_comments=[],
             summary="",
+            current_situation="",
             is_error=True,
             error_message=message,
         )

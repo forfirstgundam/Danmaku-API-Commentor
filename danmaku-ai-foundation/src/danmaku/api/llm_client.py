@@ -70,6 +70,7 @@ class GeminiLLMClient:
         comments = data.get("comments", [])
         long_comments = data.get("long_comments", [])
         summary = data.get("summary", "")
+        current_situation = data.get("current_situation", "")
 
         if not isinstance(comments, list):
             comments = []
@@ -77,6 +78,8 @@ class GeminiLLMClient:
             long_comments = []
         if not isinstance(summary, str):
             summary = ""
+        if not isinstance(current_situation, str):
+            current_situation = ""
 
         comments = [str(item) for item in comments if str(item).strip()]
         long_comments = [str(item)
@@ -89,6 +92,7 @@ class GeminiLLMClient:
             comments=comments[:12],
             long_comments=long_comments[:3],
             summary=summary.strip(),
+            current_situation=current_situation.strip(),
         )
 
     @staticmethod
