@@ -55,10 +55,8 @@ class AppSettings:
     max_pending_comments: int = 60
 
     animation_interval_ms: int = 33
-    comment_spawn_min_interval_ms: int = 2000
+    comment_spawn_min_interval_ms: int = 500
     comment_spawn_max_interval_ms: int = 4000
-    stream_comment_spawn_min_interval_ms: int = 450
-    stream_comment_spawn_max_interval_ms: int = 900
     comment_speed_px_per_tick: float = 12.0
 
     clear_active_comments_on_new_batch: bool = False

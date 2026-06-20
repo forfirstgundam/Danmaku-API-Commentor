@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import sys
 from collections import deque
+from collections import Counter
 from dataclasses import dataclass
 from typing import Deque
 
@@ -92,11 +93,6 @@ class OverlayWindow(QWidget):
         self.spawn_timer.timeout.connect(self._on_spawn_timer_timeout)
         self._schedule_next_spawn()
 
-        self.stream_spawn_timer = QTimer(self)
-        self.stream_spawn_timer.setSingleShot(True)
-        self.stream_spawn_timer.timeout.connect(
-            self._on_stream_spawn_timer_timeout)
-
         self.dummy_timer: QTimer | None = None
         if enable_dummy_spawner:
             self.dummy_timer = QTimer(self)
@@ -167,20 +163,53 @@ class OverlayWindow(QWidget):
         self._trim_pending_queue()
         self._try_spawn_from_queue()
 
-    def add_streamed_comment(self, text: str) -> None:
-        clean = str(text).strip()
+    def begin_streamed_batch(self) -> None:
+        """
+        Start a newly received API batch.
 
+        Remove comments from the previous batch that have not yet appeared.
+        Comments already moving on screen remain unless the setting explicitly
+        requests clearing them.
+        """
+        old_pending_count = len(self.pending_comments)
+        self.pending_comments.clear()
+
+        clear_active = getattr(
+            self.settings,
+            "clear_active_comments_on_new_batch",
+            False,
+        )
+
+        if clear_active:
+            self.active_comments.clear()
+            self.update()
+
+        print(
+            "[overlay] streamed batch started: "
+            f"cleared_pending={old_pending_count}, "
+            f"cleared_active={clear_active}"
+        )
+
+    def add_streamed_comment(
+        self,
+        text: str,
+        *,
+        spawn_immediately: bool = False,
+    ) -> None:
+        clean = str(text).strip()
         if not clean:
             return
 
         self.pending_comments.append(clean)
         self._trim_pending_queue()
 
-        if self.stream_spawn_timer.isActive():
-            return
+        print(
+            "[overlay] streamed comment queued: "
+            f"pending={len(self.pending_comments)}"
+        )
 
-        self._try_spawn_from_queue()
-        self._schedule_next_stream_spawn()
+        if spawn_immediately:
+            self._try_spawn_from_queue()
 
     def _build_lanes(self) -> list[int]:
         available_height = max(0, self.overlay_bottom - self.overlay_top)
@@ -233,11 +262,47 @@ class OverlayWindow(QWidget):
         self._try_spawn_from_queue()
         self._schedule_next_spawn()
 
-    def _on_stream_spawn_timer_timeout(self) -> None:
-        self._try_spawn_from_queue()
+    def finish_streamed_batch(
+        self,
+        batch: CommentBatch,
+        streamed_comments: list[str],
+    ) -> None:
+        """
+        Add final-response comments that were not already emitted during
+        streaming.
 
-        if self.pending_comments:
-            self._schedule_next_stream_spawn()
+        This does not clear the queue because begin_streamed_batch() already
+        replaced the previous batch.
+        """
+        streamed_remaining = Counter(
+            comment.strip()
+            for comment in streamed_comments
+            if comment.strip()
+        )
+
+        final_comments = [*batch.comments, *batch.long_comments]
+        added_count = 0
+
+        for comment in final_comments:
+            clean = str(comment).strip()
+            if not clean:
+                continue
+
+            if streamed_remaining[clean] > 0:
+                streamed_remaining[clean] -= 1
+                continue
+
+            self.pending_comments.append(clean)
+            added_count += 1
+
+        self._trim_pending_queue()
+
+        print(
+            "[overlay] streamed batch finalized: "
+            f"already_streamed={len(streamed_comments)}, "
+            f"added_remaining={added_count}, "
+            f"pending={len(self.pending_comments)}"
+        )
 
     def _schedule_next_spawn(self) -> None:
         min_ms = self.settings.comment_spawn_min_interval_ms
@@ -248,16 +313,6 @@ class OverlayWindow(QWidget):
 
         interval_ms = random.randint(min_ms, max_ms)
         self.spawn_timer.start(interval_ms)
-
-    def _schedule_next_stream_spawn(self) -> None:
-        min_ms = self.settings.stream_comment_spawn_min_interval_ms
-        max_ms = self.settings.stream_comment_spawn_max_interval_ms
-
-        if max_ms < min_ms:
-            max_ms = min_ms
-
-        interval_ms = random.randint(min_ms, max_ms)
-        self.stream_spawn_timer.start(interval_ms)
 
     def _find_available_lane(self, new_comment_width: int) -> int | None:
         """
