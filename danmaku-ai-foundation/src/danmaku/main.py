@@ -19,6 +19,8 @@ from danmaku.ui.settings_window import SettingsWindow
 
 
 class AppSignals(QObject):
+    frame_sampled = pyqtSignal(object)
+    sample_error = pyqtSignal(str)
     partial_comment_ready = pyqtSignal(object)
     comments_ready = pyqtSignal(object)
     error = pyqtSignal(str)
@@ -61,8 +63,13 @@ class DanmakuApp:
         self.consecutive_api_failures = 0
         self.is_running = False
         self.is_busy = False
+        self.is_sampling = False
+        self.waiting_for_first_request = False
+        self.frame_buffer: list[CaptureFrame] = []
 
         self.signals = AppSignals()
+        self.signals.frame_sampled.connect(self._on_frame_sampled)
+        self.signals.sample_error.connect(self._on_sample_error)
         self.signals.partial_comment_ready.connect(self._on_partial_comment_ready)
         self.signals.comments_ready.connect(self._on_comments_ready)
         self.signals.error.connect(self._on_error)
@@ -70,6 +77,8 @@ class DanmakuApp:
         self.capture_service = CaptureService(
             output_dir=self.settings.capture_output_dir,
             target_window_title=self.settings.target_window_title,
+            image_format="JPEG",
+            jpeg_quality=self.settings.sample_capture_jpeg_quality,
         )
 
         self.llm_client = self._build_llm_client()
@@ -84,6 +93,9 @@ class DanmakuApp:
         self.capture_timer = QTimer()
         self.capture_timer.timeout.connect(self._trigger_capture_and_api)
 
+        self.sample_timer = QTimer()
+        self.sample_timer.timeout.connect(self._trigger_sample_capture)
+
     def show(self) -> None:
         self.settings_window.show()
 
@@ -92,12 +104,19 @@ class DanmakuApp:
         self.consecutive_api_failures = 0
         self.stream_batch_started = False
         self.streamed_comments_current_batch = []
+        self.frame_buffer = []
+        self.is_sampling = False
+        # Single-frame mode preserves the old quick first request. Multi-frame
+        # mode waits for the normal API interval so its first buffer can fill.
+        self.waiting_for_first_request = not self.settings.use_multi_frame_context
 
         self._initialize_run_logging()
 
         self.capture_service = CaptureService(
             output_dir=self.settings.capture_output_dir,
             target_window_title=self.settings.target_window_title,
+            image_format="JPEG",
+            jpeg_quality=self.settings.sample_capture_jpeg_quality,
         )
         self.llm_client = self._build_llm_client()
         self.fallback_llm_client = self._build_fallback_llm_client()
@@ -128,6 +147,18 @@ class DanmakuApp:
             f"{self.settings.api_max_output_tokens}"
         )
         print(f"[app] use_streaming_api={self.settings.use_streaming_api}")
+        print(
+            "[app] multi_frame_context="
+            f"{self.settings.use_multi_frame_context}, "
+            f"sample_interval={self.settings.frame_sample_interval_seconds}s, "
+            f"buffer_size={self.settings.frame_buffer_size}, "
+            f"frames_per_request={self.settings.frames_per_request}"
+        )
+        print(
+            "[app] history_image="
+            f"{self.settings.history_image_max_dimension}px, "
+            f"quality={self.settings.history_image_jpeg_quality}"
+        )
         print(f"[app] save_api_images={self.settings.save_api_images}")
         print(
             "[app] capture_dir="
@@ -149,6 +180,13 @@ class DanmakuApp:
         interval_ms = self.settings.capture_interval_seconds * 1000
         self.capture_timer.start(interval_ms)
 
+        sample_interval_seconds = (
+            self.settings.frame_sample_interval_seconds
+            if self.settings.use_multi_frame_context
+            else self.settings.capture_interval_seconds
+        )
+        self.sample_timer.setInterval(max(1, sample_interval_seconds) * 1000)
+
         self.overlay.show()
         self.is_running = True
         self.settings_window.set_running(True)
@@ -157,17 +195,18 @@ class DanmakuApp:
         self.settings_window.showMinimized()
 
         print(
-            "[app] first capture scheduled after "
+            "[app] first frame sample scheduled after "
             f"{self.settings.first_capture_delay_ms} ms"
         )
 
         QTimer.singleShot(
             self.settings.first_capture_delay_ms,
-            self._trigger_capture_and_api,
+            self._begin_sampling,
         )
 
     def stop(self) -> None:
         self.capture_timer.stop()
+        self.sample_timer.stop()
         self.overlay.hide()
         self.is_running = False
         self.settings_window.set_running(False)
@@ -182,6 +221,12 @@ class DanmakuApp:
             send_screenshot=self.settings.send_screenshot_to_api,
             image_max_dimension=self.settings.api_image_max_dimension,
             image_jpeg_quality=self.settings.api_image_jpeg_quality,
+            history_image_max_dimension=(
+                self.settings.history_image_max_dimension
+            ),
+            history_image_jpeg_quality=(
+                self.settings.history_image_jpeg_quality
+            ),
             max_output_tokens=self.settings.api_max_output_tokens,
             save_api_images=self.settings.save_api_images,
             api_image_output_dir=self.settings.api_image_output_dir,
@@ -204,6 +249,12 @@ class DanmakuApp:
             send_screenshot=self.settings.send_screenshot_to_api,
             image_max_dimension=self.settings.api_image_max_dimension,
             image_jpeg_quality=self.settings.api_image_jpeg_quality,
+            history_image_max_dimension=(
+                self.settings.history_image_max_dimension
+            ),
+            history_image_jpeg_quality=(
+                self.settings.history_image_jpeg_quality
+            ),
             max_output_tokens=self.settings.api_max_output_tokens,
             save_api_images=self.settings.save_api_images,
             api_image_output_dir=self.settings.api_image_output_dir,
@@ -241,31 +292,138 @@ class DanmakuApp:
 
         return "\n\n".join(parts)
 
+    def _trigger_sample_capture(self) -> None:
+        if not self.is_running or self.is_sampling:
+            return
+
+        self.is_sampling = True
+
+        thread = threading.Thread(
+            target=self._sample_capture_worker,
+            daemon=True,
+        )
+        thread.start()
+
+    def _begin_sampling(self) -> None:
+        if not self.is_running:
+            return
+
+        self._trigger_sample_capture()
+        self.sample_timer.start()
+
+    def _sample_capture_worker(self) -> None:
+        try:
+            capture_started = time.perf_counter()
+            frame = self.capture_service.capture()
+            capture_duration_sec = round(
+                time.perf_counter() - capture_started,
+                3,
+            )
+            self.signals.frame_sampled.emit(
+                {
+                    "frame": frame,
+                    "capture_duration_sec": capture_duration_sec,
+                }
+            )
+        except Exception as exc:
+            self.signals.sample_error.emit(str(exc))
+
+    def _on_frame_sampled(self, payload: object) -> None:
+        self.is_sampling = False
+        data = payload if isinstance(payload, dict) else {}
+        frame = data.get("frame")
+
+        if not isinstance(frame, CaptureFrame):
+            print("[capture] invalid sampled frame")
+            return
+
+        self.frame_buffer.append(frame)
+        buffer_size = max(1, self.settings.frame_buffer_size)
+        self.frame_buffer = self.frame_buffer[-buffer_size:]
+
+        image_size_kb = round(frame.image_path.stat().st_size / 1024, 1)
+        print(
+            "[capture] sampled "
+            f"{frame.image_path} ({image_size_kb} KB) "
+            f"in {data.get('capture_duration_sec')}s; "
+            f"buffer={len(self.frame_buffer)}/{buffer_size}"
+        )
+
+        if self.waiting_for_first_request and self.is_running:
+            self.waiting_for_first_request = False
+            QTimer.singleShot(0, self._trigger_capture_and_api)
+
+    def _on_sample_error(self, message: str) -> None:
+        self.is_sampling = False
+        print(f"[capture] sample failed: {message}")
+
+    def _select_frames_for_request(self) -> list[CaptureFrame]:
+        if not self.frame_buffer:
+            return []
+
+        if not self.settings.use_multi_frame_context:
+            return [self.frame_buffer[-1]]
+
+        requested_count = max(1, self.settings.frames_per_request)
+        frame_count = min(requested_count, len(self.frame_buffer))
+
+        if frame_count == len(self.frame_buffer):
+            return list(self.frame_buffer)
+
+        if frame_count == 1:
+            return [self.frame_buffer[-1]]
+
+        last_index = len(self.frame_buffer) - 1
+        indices = [
+            round(step * last_index / (frame_count - 1))
+            for step in range(frame_count)
+        ]
+        return [self.frame_buffer[index] for index in indices]
+
     def _trigger_capture_and_api(self) -> None:
         if not self.is_running or self.is_busy:
+            return
+
+        selected_frames = self._select_frames_for_request()
+        if not selected_frames:
+            print("[api] skipped request: no sampled frames available")
+            self._trigger_sample_capture()
             return
 
         self.is_busy = True
         self.stream_batch_started = False
         self.streamed_comments_current_batch = []
 
+        frame_span_sec = round(
+            selected_frames[-1].timestamp - selected_frames[0].timestamp,
+            3,
+        )
+        print(
+            "[context] selected frames: "
+            f"count={len(selected_frames)}, span={frame_span_sec}s, "
+            f"ages={[round(selected_frames[-1].timestamp - item.timestamp, 2) for item in selected_frames]}"
+        )
+
         thread = threading.Thread(
             target=self._capture_and_generate_worker,
+            args=(selected_frames,),
             daemon=True,
         )
         thread.start()
 
-    def _capture_and_generate_worker(self) -> None:
+    def _capture_and_generate_worker(
+        self,
+        frames: list[CaptureFrame],
+    ) -> None:
         try:
             worker_started = time.perf_counter()
+            frame = frames[-1]
+            context_frames = frames[:-1]
 
-            capture_started = time.perf_counter()
-            frame = self.capture_service.capture()
-            capture_finished = time.perf_counter()
-
-            image_size_kb = round(frame.image_path.stat().st_size / 1024, 1)
-            print(f"[capture] saved {frame.image_path} ({image_size_kb} KB)")
-
+            latest_frame_age_at_request_sec = round(
+                max(0.0, time.time() - frame.timestamp),
+                3,
+            )
             api_started = time.perf_counter()
             context_for_api = self._build_context_summary()
 
@@ -305,6 +463,7 @@ class DanmakuApp:
                 frame=frame,
                 previous_summary=context_for_api,
                 previous_comments=recent_comments_for_api,
+                context_frames=context_frames,
                 use_streaming=self.settings.use_streaming_api,
                 on_comment=on_streamed_comment,
             )
@@ -326,6 +485,7 @@ class DanmakuApp:
                     frame=frame,
                     previous_summary=context_for_api,
                     previous_comments=recent_comments_for_api,
+                    context_frames=context_frames,
                     use_streaming=False,
                     on_comment=None,
                 )
@@ -371,6 +531,7 @@ class DanmakuApp:
                     frame=frame,
                     previous_summary=context_for_api,
                     previous_comments=recent_comments_for_api,
+                    context_frames=context_frames,
                     use_streaming=False,
                     on_comment=None,
                 )
@@ -398,12 +559,9 @@ class DanmakuApp:
             api_finished = time.perf_counter()
 
             metrics = {
-                "capture_duration_sec": round(
-                    capture_finished - capture_started,
-                    3,
-                ),
+                "capture_duration_sec": None,
                 "comment_after_capture_sec": round(
-                    api_finished - capture_finished,
+                    time.time() - frame.timestamp,
                     3,
                 ),
                 "api_duration_sec": round(
@@ -420,6 +578,15 @@ class DanmakuApp:
                     else None
                 ),
                 "streamed_comment_count": streamed_comment_count,
+                "frames_sent_count": len(frames),
+                "frames_sent_span_sec": round(
+                    frame.timestamp - frames[0].timestamp,
+                    3,
+                ),
+                "latest_frame_age_at_request_sec": round(
+                    latest_frame_age_at_request_sec,
+                    3,
+                ),
                 "retry_used": retry_used,
                 "retry_duration_sec": retry_duration_sec,
                 "retry_error_message": retry_error_message,
@@ -435,7 +602,8 @@ class DanmakuApp:
 
             print(
                 "[timing] "
-                f"capture={metrics['capture_duration_sec']}s, "
+                f"frames={metrics['frames_sent_count']}, "
+                f"frame_span={metrics['frames_sent_span_sec']}s, "
                 f"after_capture_to_comments="
                 f"{metrics['comment_after_capture_sec']}s, "
                 f"first_streamed_comment="
@@ -447,6 +615,7 @@ class DanmakuApp:
             self.signals.comments_ready.emit(
                 {
                     "frame": frame,
+                    "frames_sent": frames,
                     "batch": batch,
                     "metrics": metrics,
                     "context_sent": context_for_api,
@@ -466,6 +635,7 @@ class DanmakuApp:
         data = payload if isinstance(payload, dict) else {}
 
         frame = data.get("frame")
+        frames_sent = data.get("frames_sent", [])
         batch = data.get("batch")
         metrics = data.get("metrics", {})
         context_sent = data.get("context_sent", "")
@@ -511,6 +681,9 @@ class DanmakuApp:
                         recent_comments_sent
                         if isinstance(recent_comments_sent, list)
                         else []
+                    ),
+                    frames_sent=(
+                        frames_sent if isinstance(frames_sent, list) else []
                     ),
                 )
 
@@ -592,6 +765,9 @@ class DanmakuApp:
                     recent_comments_sent
                     if isinstance(recent_comments_sent, list)
                     else []
+                ),
+                frames_sent=(
+                    frames_sent if isinstance(frames_sent, list) else []
                 ),
             )
 
@@ -739,6 +915,7 @@ class DanmakuApp:
         summary_before_request: str = "",
         situations_before_request: list[str] | None = None,
         recent_comments_sent: list[str] | None = None,
+        frames_sent: list[CaptureFrame] | None = None,
     ) -> None:
         self.settings.comment_log_path.parent.mkdir(
             parents=True,
@@ -759,6 +936,19 @@ class DanmakuApp:
             "situations_before_request": situations_before_request or [],
             "recent_comments_sent": recent_comments_sent or [],
             "context_sent": context_sent,
+            "frames_sent": [
+                {
+                    "image_path": str(item.image_path),
+                    "timestamp": item.timestamp,
+                    "age_from_latest_sec": round(
+                        max(0.0, frame.timestamp - item.timestamp),
+                        3,
+                    ),
+                    "is_latest": item.image_path == frame.image_path,
+                }
+                for item in (frames_sent or [frame])
+                if isinstance(item, CaptureFrame)
+            ],
 
             # Response.
             "summary": batch.summary,
@@ -788,6 +978,20 @@ class DanmakuApp:
             ),
             "api_image_jpeg_quality": (
                 self.settings.api_image_jpeg_quality
+            ),
+            "use_multi_frame_context": (
+                self.settings.use_multi_frame_context
+            ),
+            "frame_sample_interval_seconds": (
+                self.settings.frame_sample_interval_seconds
+            ),
+            "frame_buffer_size": self.settings.frame_buffer_size,
+            "frames_per_request": self.settings.frames_per_request,
+            "history_image_max_dimension": (
+                self.settings.history_image_max_dimension
+            ),
+            "history_image_jpeg_quality": (
+                self.settings.history_image_jpeg_quality
             ),
             "api_max_output_tokens": self.settings.api_max_output_tokens,
             "use_streaming_api": self.settings.use_streaming_api,

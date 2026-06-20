@@ -63,10 +63,24 @@ class SettingsWindow(QWidget):
         self.streaming_checkbox = QCheckBox("Stream comments as they arrive")
         self.streaming_checkbox.setChecked(settings.use_streaming_api)
 
+        self.multi_frame_checkbox = QCheckBox("Send recent frame sequence")
+        self.multi_frame_checkbox.setChecked(settings.use_multi_frame_context)
+
         self.interval_input = QSpinBox()
         self.interval_input.setRange(2, 60)
         self.interval_input.setValue(settings.capture_interval_seconds)
         self.interval_input.setSuffix(" sec")
+
+        self.sample_interval_input = QSpinBox()
+        self.sample_interval_input.setRange(1, 10)
+        self.sample_interval_input.setValue(
+            settings.frame_sample_interval_seconds)
+        self.sample_interval_input.setSuffix(" sec")
+
+        self.frames_per_request_input = QSpinBox()
+        self.frames_per_request_input.setRange(1, 8)
+        self.frames_per_request_input.setValue(settings.frames_per_request)
+        self.frames_per_request_input.setSuffix(" frames")
 
         self.api_image_size_input = QSpinBox()
         self.api_image_size_input.setRange(320, 1920)
@@ -99,7 +113,9 @@ class SettingsWindow(QWidget):
         form.addRow("API key", self.api_key_input)
         form.addRow("Model", self.model_input)
         form.addRow("Fallback model", self.fallback_model_input)
-        form.addRow("Capture interval", self.interval_input)
+        form.addRow("Comment/API interval", self.interval_input)
+        form.addRow("Frame sample interval", self.sample_interval_input)
+        form.addRow("Frames per request", self.frames_per_request_input)
         form.addRow("API image max size", self.api_image_size_input)
         form.addRow("API JPEG quality", self.api_image_quality_input)
         form.addRow("Max output", self.max_output_tokens_input)
@@ -107,6 +123,7 @@ class SettingsWindow(QWidget):
         form.addRow("", self.dummy_checkbox)
         form.addRow("", self.send_screenshot_checkbox)
         form.addRow("", self.streaming_checkbox)
+        form.addRow("", self.multi_frame_checkbox)
         form.addRow("Capture window", self.window_selector)
         form.addRow("", self.refresh_windows_button)
         self.refresh_windows_button.clicked.connect(self._load_window_titles)
@@ -138,7 +155,18 @@ class SettingsWindow(QWidget):
         self.settings.use_dummy_api = self.dummy_checkbox.isChecked()
         self.settings.send_screenshot_to_api = self.send_screenshot_checkbox.isChecked()
         self.settings.use_streaming_api = self.streaming_checkbox.isChecked()
+        self.settings.use_multi_frame_context = (
+            self.multi_frame_checkbox.isChecked()
+        )
         self.settings.capture_interval_seconds = self.interval_input.value()
+        self.settings.frame_sample_interval_seconds = (
+            self.sample_interval_input.value()
+        )
+        self.settings.frames_per_request = self.frames_per_request_input.value()
+        self.settings.frame_buffer_size = max(
+            self.settings.frame_buffer_size,
+            self.settings.frames_per_request,
+        )
         self.settings.api_image_max_dimension = self.api_image_size_input.value()
         self.settings.api_image_jpeg_quality = self.api_image_quality_input.value()
         self.settings.api_max_output_tokens = self.max_output_tokens_input.value()

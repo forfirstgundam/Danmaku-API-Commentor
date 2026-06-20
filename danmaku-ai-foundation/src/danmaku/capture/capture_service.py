@@ -15,9 +15,17 @@ class CaptureService:
     If target_window_title is set, captures that visible window rectangle.
     """
 
-    def __init__(self, output_dir: Path, target_window_title: str = "") -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        target_window_title: str = "",
+        image_format: str = "PNG",
+        jpeg_quality: int = 82,
+    ) -> None:
         self.output_dir = output_dir
         self.target_window_title = target_window_title
+        self.image_format = image_format.upper()
+        self.jpeg_quality = max(20, min(95, int(jpeg_quality)))
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def set_target_window_title(self, title: str) -> None:
@@ -47,7 +55,20 @@ class CaptureService:
                 for char in self.target_window_title[:40]
             )
 
-        return self.output_dir / f"capture_{safe_target}_{timestamp}.png"
+        suffix = ".jpg" if self.image_format == "JPEG" else ".png"
+        return self.output_dir / f"capture_{safe_target}_{timestamp}{suffix}"
+
+    def _save_image(self, image, output_path: Path) -> None:
+        if self.image_format == "JPEG":
+            image.convert("RGB").save(
+                output_path,
+                format="JPEG",
+                quality=self.jpeg_quality,
+                optimize=True,
+            )
+            return
+
+        image.save(output_path, format="PNG")
 
     def _capture_full_screen(self, output_path: Path) -> None:
         try:
@@ -58,7 +79,7 @@ class CaptureService:
                 monitor = sct.monitors[1]
                 screenshot = sct.grab(monitor)
                 image = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
-                image.save(output_path)
+                self._save_image(image, output_path)
                 return
         except Exception:
             pass
@@ -67,7 +88,7 @@ class CaptureService:
             from PIL import ImageGrab
 
             image = ImageGrab.grab()
-            image.save(output_path)
+            self._save_image(image, output_path)
             return
         except Exception as exc:
             raise RuntimeError(f"Full-screen capture failed: {exc}") from exc
@@ -121,7 +142,7 @@ class CaptureService:
             with mss.mss() as sct:
                 screenshot = sct.grab(region)
                 image = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
-                image.save(output_path)
+                self._save_image(image, output_path)
 
             return
 

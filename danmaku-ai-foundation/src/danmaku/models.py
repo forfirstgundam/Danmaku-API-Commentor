@@ -10,6 +10,11 @@ class AppSettings:
     first_capture_delay_ms: int = 1500
 
     capture_interval_seconds: int = 6
+    use_multi_frame_context: bool = True
+    frame_sample_interval_seconds: int = 1
+    frame_buffer_size: int = 6
+    frames_per_request: int = 4
+    sample_capture_jpeg_quality: int = 82
     api_provider: str = "gemini"
     model_name: str = "gemini-2.5-flash-lite"
     fallback_model_name: str = "gemini-3.5-flash"
@@ -18,6 +23,8 @@ class AppSettings:
     send_screenshot_to_api: bool = True
     api_image_max_dimension: int = 768
     api_image_jpeg_quality: int = 72
+    history_image_max_dimension: int = 384
+    history_image_jpeg_quality: int = 42
     api_max_output_tokens: int = 512
     use_streaming_api: bool = True
 
