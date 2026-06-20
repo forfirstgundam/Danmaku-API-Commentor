@@ -9,14 +9,24 @@ from danmaku.models import CaptureFrame
 
 class CaptureService:
     """
-    Basic screen/window capture service.
+    Basic screen/window/region capture service.
 
-    If target_window_title is empty, captures the full primary screen.
-    If target_window_title is set, captures that visible window rectangle.
+    Modes:
+    - full_screen: captures the primary screen.
+    - window: captures a specific window rectangle.
+    - region: captures a user-selected region.
     """
 
-    def __init__(self, output_dir: Path, target_window_title: str = "") -> None:
+    def __init__(
+        self,
+        output_dir: Path,
+        capture_mode: str = "full_screen",
+        capture_region: tuple[int, int, int, int] = (0, 0, 0, 0),
+        target_window_title: str = "",
+    ) -> None:
         self.output_dir = output_dir
+        self.capture_mode = capture_mode
+        self.capture_region = capture_region
         self.target_window_title = target_window_title
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -26,7 +36,9 @@ class CaptureService:
     def capture(self) -> CaptureFrame:
         image_path = self._make_capture_path()
 
-        if self.target_window_title:
+        if self.capture_mode == "region":
+            self._capture_region(image_path, self.capture_region)
+        elif self.capture_mode == "window" and self.target_window_title:
             self._capture_window(image_path, self.target_window_title)
         else:
             self._capture_full_screen(image_path)
@@ -39,13 +51,15 @@ class CaptureService:
 
     def _make_capture_path(self) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        safe_target = "fullscreen"
-
-        if self.target_window_title:
+        if self.capture_mode == "region":
+            safe_target = "region"
+        elif self.target_window_title:
             safe_target = "".join(
                 char if char.isalnum() or char in ("-", "_") else "_"
                 for char in self.target_window_title[:40]
             )
+        else:
+            safe_target = "fullscreen"
 
         return self.output_dir / f"capture_{safe_target}_{timestamp}.png"
 
@@ -71,6 +85,30 @@ class CaptureService:
             return
         except Exception as exc:
             raise RuntimeError(f"Full-screen capture failed: {exc}") from exc
+
+    def _capture_region(self, output_path: Path, region: tuple[int, int, int, int]) -> None:
+        try:
+            import mss
+            from PIL import Image
+
+            left, top, width, height = region
+            if width <= 0 or height <= 0:
+                raise RuntimeError("Invalid capture region size")
+
+            region_box = {
+                "left": left,
+                "top": top,
+                "width": width,
+                "height": height,
+            }
+
+            with mss.mss() as sct:
+                screenshot = sct.grab(region_box)
+                image = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+                image.save(output_path)
+                return
+        except Exception as exc:
+            raise RuntimeError(f"Region capture failed: {exc}") from exc
 
     def _capture_window(self, output_path: Path, window_title: str) -> None:
         """

@@ -55,6 +55,8 @@ class DanmakuApp:
 
         self.capture_service = CaptureService(
             output_dir=self.settings.capture_output_dir,
+            capture_mode=self.settings.capture_mode,
+            capture_region=self.settings.capture_region,
             target_window_title=self.settings.target_window_title,
         )
 
@@ -77,6 +79,8 @@ class DanmakuApp:
         self._initialize_run_logging()
         self.capture_service = CaptureService(
             output_dir=self.settings.capture_output_dir,
+            capture_mode=self.settings.capture_mode,
+            capture_region=self.settings.capture_region,
             target_window_title=self.settings.target_window_title,
         )
         self.llm_client = self._build_llm_client()
@@ -85,6 +89,8 @@ class DanmakuApp:
         print(f"[app] dummy_api={self.settings.use_dummy_api}")
         print(f"[app] api_key_set={bool(self.settings.api_key)}")
         print(f"[app] model={self.settings.model_name}")
+        print(f"[app] capture_mode={self.settings.capture_mode}")
+        print(f"[app] capture_region={self.settings.capture_region}")
         print(f"[app] capture_dir={self.settings.capture_output_dir.resolve()}")
         print(f"[app] comment_log_path={self.settings.comment_log_path.resolve()}")
         print(f"[app] target_window={self.settings.target_window_title or 'Full screen'}")

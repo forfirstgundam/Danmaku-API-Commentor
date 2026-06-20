@@ -45,6 +45,8 @@ Set environment variables:
 set GEMINI_API_KEY=your_key_here
 set DANMAKU_USE_DUMMY_API=false
 set MODEL_NAME=gemini-2.5-flash-lite
+set CAPTURE_MODE=region
+set CAPTURE_REGION=320,180,1280,720
 set PYTHONPATH=src
 python -m danmaku.main
 ```

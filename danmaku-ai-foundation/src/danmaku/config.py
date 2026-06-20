@@ -34,6 +34,24 @@ def load_settings_from_env() -> AppSettings:
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
     use_dummy_raw = os.getenv("DANMAKU_USE_DUMMY_API", "true").strip().lower()
 
+    capture_mode = os.getenv("CAPTURE_MODE", "full_screen").strip().lower()
+    if capture_mode not in {"full_screen", "window", "region"}:
+        capture_mode = "full_screen"
+
+    capture_region = (0, 0, 0, 0)
+    raw_capture_region = os.getenv("CAPTURE_REGION", "").strip()
+    if raw_capture_region:
+        parts = [part.strip() for part in raw_capture_region.split(",")]
+        if len(parts) == 4:
+            try:
+                left, top, width, height = [int(part) for part in parts]
+                if width > 0 and height > 0:
+                    capture_region = (left, top, width, height)
+                else:
+                    capture_mode = "full_screen"
+            except ValueError:
+                capture_mode = "full_screen"
+
     return AppSettings(
         capture_interval_seconds=int(
             os.getenv("CAPTURE_INTERVAL_SECONDS", "6")),
@@ -41,4 +59,6 @@ def load_settings_from_env() -> AppSettings:
         api_key=api_key,
         use_dummy_api=use_dummy_raw in {
             "1", "true", "yes", "y"} or not api_key,
+        capture_mode=capture_mode,
+        capture_region=capture_region,
     )

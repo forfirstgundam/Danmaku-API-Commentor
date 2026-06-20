@@ -28,6 +28,8 @@ class AppSettings:
 
     # Capture settings
     target_window_title: str = ""  # empty means full screen
+    capture_mode: str = "full_screen"
+    capture_region: tuple[int, int, int, int] = (0, 0, 0, 0)
 
     # Overlay settings
     font_family: str = "Malgun Gothic"
