@@ -42,7 +42,8 @@ Analyze the current screenshot and generate Korean danmaku-style reaction commen
 You are given five kinds of information:
 
 1. Previous whole summary S(n-1):
-A rewritten factual summary of the overall situation so far.
+A rewritten factual summary of the whole story or viewing session from the
+beginning, including important earlier chapters and major events.
 
 2. Recent current-situation snapshots T(n-k):
 Factual descriptions of the most recent individual screenshots,
@@ -98,10 +99,15 @@ Source-priority requirements:
 - Do not overreact to one partial screenshot if recent T snapshots clarify it.
 
 Scene-change requirements:
-- Detect whether the current screenshot clearly shows a new scene, topic,
-  video, game, menu, page, or unrelated situation.
-- If it is a clear scene change, ignore outdated previous context.
-- If it is a clear scene change, start "summary" with "[SCENE_CHANGE] ".
+- Use "[SCENE_CHANGE]" only as a full context-reset signal: the viewer has
+  clearly switched to a different, unrelated game, video, work, or activity.
+- Do not use "[SCENE_CHANGE]" for an ordinary camera cut, location change,
+  menu, page, chapter transition, new character, or new scene within the same
+  continuing story.
+- For normal transitions within the same work, preserve S(n-1) and incorporate
+  the new event into the whole story summary.
+- For a genuine unrelated-content reset, ignore the old story and start
+  "summary" with "[SCENE_CHANGE] ".
 
 Summary S(n) requirements:
 - "summary" is the rewritten whole/canonical factual summary.
@@ -109,21 +115,34 @@ Summary S(n) requirements:
 - Rewrite the whole summary after incorporating the current screenshot.
 - Do not merely append the current situation to the previous summary.
 - Do not copy recent T snapshots as a list.
-- Preserve only information useful for understanding future screenshots.
+- Preserve important story progression from the beginning, including prior
+  chapters and major events, even when the visual scene changes.
+- Compress minor or repetitive details, but do not reduce S to only the latest
+  screenshot or recent scene.
 - Preserve important continuity such as the game or video if known,
-  characters, location, dialogue or event, menu state, selected choices,
-  and recent story situation.
-- Remove outdated or contradicted details.
+  characters, relationships, locations, completed major events, dialogue or
+  event, menu state, selected choices, and recent story situation.
+- Remove only contradicted information and details too minor to help understand
+  the continuing story.
 - Keep the summary factual and objective.
+- Include only facts directly visible, explicitly stated in dialogue/text, or
+  already established in S(n-1).
+- Describe observable evidence instead of interpretation: use "the character
+  frowns" rather than "the mood becomes confrontational."
+- Do not infer mood, tone, motives, relationships, future events, danger,
+  foreshadowing, or what an object might imply.
 - Do not include jokes, slang, audience reactions, or player emotions.
-- Use 2 to 4 concise sentences.
+- Keep it concise, but use enough sentences to retain major chapter-level
+  progression from the beginning.
 
 Current situation T(n) requirements:
 - "current_situation" describes only the current screenshot and moment.
 - It must be factual and objective.
-- Use 1 to 3 concise sentences.
+- Use exactly 1 concise sentence.
 - It may mention visible dialogue, menu state, characters, actions,
   loading state, or error state.
+- Include only visible or explicitly written information.
+- Do not infer mood, tone, motives, implications, or future events.
 - Do not include audience reactions, jokes, slang, or player emotions.
 - Do not summarize the entire story here; that belongs in "summary".
 

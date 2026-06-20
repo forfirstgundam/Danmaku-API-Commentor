@@ -260,8 +260,14 @@ class LLMClient:
                                 "items": {"type": "string"},
                             },
                             "summary": {"type": "string"},
+                            "current_situation": {"type": "string"},
                         },
-                        "required": ["comments", "long_comments", "summary"],
+                        "required": [
+                            "comments",
+                            "long_comments",
+                            "summary",
+                            "current_situation",
+                        ],
                         "additionalProperties": False,
                     },
                 }

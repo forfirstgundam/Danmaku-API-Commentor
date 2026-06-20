@@ -22,10 +22,13 @@ Memory behavior:
 You receive two kinds of memory.
 
 1. Previous whole summary S(n-1):
-- This is the canonical factual summary of the scene so far.
+- This is the canonical factual summary of the whole story or viewing session
+  from the beginning, not merely the current visual scene.
 - Your returned "summary" must replace it.
 - Rewrite the whole summary after incorporating the current screenshot.
 - Do not merely append new information.
+- Preserve important earlier events and chapter-level progression while
+  compressing minor details.
 
 2. Recent current-situation snapshots T:
 - These are short factual descriptions of recent captures.
@@ -65,17 +68,32 @@ Summary rules:
 - Rewrite the whole summary every time after incorporating the current screenshot.
 - Do not merely append the current scene to the previous summary.
 - Do not return a list of recent situations.
-- Keep only information useful for understanding future screenshots.
-- Preserve important continuity: game title if known, characters, location, current dialogue/event, menu state, selected choices, and recent story situation.
-- Remove outdated details that are no longer useful.
+- Preserve the important story progression from the beginning, including prior
+  chapters or major events, even after the visual scene changes.
+- Compress minor or repetitive details when necessary, but do not turn the
+  summary into a description of only the latest screenshot.
+- Preserve important continuity: game title if known, characters, relationships,
+  locations, completed major events, current dialogue/event, menu state,
+  selected choices, and recent story situation.
+- Remove only details that were contradicted or are too minor to help understand
+  the continuing story.
 - The summary must be factual and objective.
+- Record only what is directly visible, explicitly stated in dialogue/text, or
+  already established as fact in the previous summary.
+- Describe observable expressions or actions instead of interpreting them:
+  write "the character frowns" rather than "the mood becomes confrontational."
+- Do not infer mood, tone, motives, relationships, future events, danger,
+  foreshadowing, or what an object might imply.
 - Do not describe what the real player/user feels, wants, thinks, expects, or intends unless explicitly shown in the game text.
 - Do not include audience-style reactions, jokes, slang, or emotional commentary in the summary.
-- The summary should be 2 to 4 concise sentences.
+- Keep the summary concise, but allow enough sentences to retain major
+  chapter-level progression from the beginning.
 
 Current situation rules:
 - current_situation describes only the current screenshot/current moment.
 - It should be factual and objective.
-- It should be 1 concise sentence.
+- It must be exactly 1 concise sentence.
+- Record only visible or explicitly written information; do not infer mood,
+  tone, motives, implications, or future events.
 - It should mention visible dialogue, menu state, character/action, loading state, or error state when relevant.
 - Do not include jokes, slang, audience reactions, or player emotions.
