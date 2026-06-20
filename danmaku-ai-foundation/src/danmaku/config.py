@@ -31,14 +31,35 @@ def load_settings_from_env() -> AppSettings:
 
     Do not hardcode real API keys in the source code.
     """
-    api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    api_provider = os.getenv("API_PROVIDER", "gemini").strip().lower()
+    api_key_env = "OPENAI_API_KEY" if api_provider == "openai" else "GEMINI_API_KEY"
+    api_key = os.getenv(api_key_env, "").strip()
+    default_model = (
+        "gpt-5.4-nano"
+        if api_provider == "openai"
+        else "gemini-2.5-flash-lite"
+    )
     use_dummy_raw = os.getenv("DANMAKU_USE_DUMMY_API", "true").strip().lower()
+    send_screenshot_raw = os.getenv(
+        "DANMAKU_SEND_SCREENSHOT", "true").strip().lower()
+    save_api_images_raw = os.getenv(
+        "DANMAKU_SAVE_API_IMAGES", "true").strip().lower()
+    use_streaming_raw = os.getenv(
+        "DANMAKU_USE_STREAMING_API", "true").strip().lower()
 
     return AppSettings(
         capture_interval_seconds=int(
             os.getenv("CAPTURE_INTERVAL_SECONDS", "6")),
-        model_name=os.getenv("MODEL_NAME", "gemini-2.5-flash-lite"),
+        api_provider=api_provider,
+        model_name=os.getenv("MODEL_NAME", default_model),
+        fallback_model_name=os.getenv("FALLBACK_MODEL_NAME", "gemini-3.5-flash"),
         api_key=api_key,
+        send_screenshot_to_api=send_screenshot_raw in {"1", "true", "yes", "y"},
+        api_image_max_dimension=int(os.getenv("API_IMAGE_MAX_DIMENSION", "768")),
+        api_image_jpeg_quality=int(os.getenv("API_IMAGE_JPEG_QUALITY", "72")),
+        api_max_output_tokens=int(os.getenv("API_MAX_OUTPUT_TOKENS", "512")),
+        use_streaming_api=use_streaming_raw in {"1", "true", "yes", "y"},
+        save_api_images=save_api_images_raw in {"1", "true", "yes", "y"},
         use_dummy_api=use_dummy_raw in {
             "1", "true", "yes", "y"} or not api_key,
     )

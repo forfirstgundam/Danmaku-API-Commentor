@@ -10,13 +10,21 @@ class AppSettings:
     first_capture_delay_ms: int = 1500
 
     capture_interval_seconds: int = 6
+    api_provider: str = "gemini"
     model_name: str = "gemini-2.5-flash-lite"
+    fallback_model_name: str = "gemini-3.5-flash"
     api_key: str = ""
     use_dummy_api: bool = True
+    send_screenshot_to_api: bool = True
+    api_image_max_dimension: int = 768
+    api_image_jpeg_quality: int = 72
+    api_max_output_tokens: int = 512
+    use_streaming_api: bool = True
 
     # Testing / logging
     save_captures: bool = True
     save_comments: bool = True
+    save_api_images: bool = True
 
     # Base folder for all runs
     log_root_dir: Path = Path("logs")
@@ -24,6 +32,7 @@ class AppSettings:
     # These are filled/replaced when Start is pressed
     run_log_dir: Path = Path("logs/current")
     capture_output_dir: Path = Path("logs/current/captures")
+    api_image_output_dir: Path = Path("logs/current/api_images")
     comment_log_path: Path = Path("logs/current/comments.jsonl")
 
     # Capture settings
@@ -48,6 +57,8 @@ class AppSettings:
     animation_interval_ms: int = 33
     comment_spawn_min_interval_ms: int = 2000
     comment_spawn_max_interval_ms: int = 4000
+    stream_comment_spawn_min_interval_ms: int = 450
+    stream_comment_spawn_max_interval_ms: int = 900
     comment_speed_px_per_tick: float = 12.0
 
     clear_active_comments_on_new_batch: bool = False

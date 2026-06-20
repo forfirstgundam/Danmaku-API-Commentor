@@ -92,6 +92,11 @@ class OverlayWindow(QWidget):
         self.spawn_timer.timeout.connect(self._on_spawn_timer_timeout)
         self._schedule_next_spawn()
 
+        self.stream_spawn_timer = QTimer(self)
+        self.stream_spawn_timer.setSingleShot(True)
+        self.stream_spawn_timer.timeout.connect(
+            self._on_stream_spawn_timer_timeout)
+
         self.dummy_timer: QTimer | None = None
         if enable_dummy_spawner:
             self.dummy_timer = QTimer(self)
@@ -160,6 +165,22 @@ class OverlayWindow(QWidget):
             self.pending_comments.append(clean)
 
         self._trim_pending_queue()
+        self._try_spawn_from_queue()
+
+    def add_streamed_comment(self, text: str) -> None:
+        clean = str(text).strip()
+
+        if not clean:
+            return
+
+        self.pending_comments.append(clean)
+        self._trim_pending_queue()
+
+        if self.stream_spawn_timer.isActive():
+            return
+
+        self._try_spawn_from_queue()
+        self._schedule_next_stream_spawn()
 
     def _build_lanes(self) -> list[int]:
         available_height = max(0, self.overlay_bottom - self.overlay_top)
@@ -212,6 +233,11 @@ class OverlayWindow(QWidget):
         self._try_spawn_from_queue()
         self._schedule_next_spawn()
 
+    def _on_stream_spawn_timer_timeout(self) -> None:
+        self._try_spawn_from_queue()
+
+        if self.pending_comments:
+            self._schedule_next_stream_spawn()
 
     def _schedule_next_spawn(self) -> None:
         min_ms = self.settings.comment_spawn_min_interval_ms
@@ -222,6 +248,16 @@ class OverlayWindow(QWidget):
 
         interval_ms = random.randint(min_ms, max_ms)
         self.spawn_timer.start(interval_ms)
+
+    def _schedule_next_stream_spawn(self) -> None:
+        min_ms = self.settings.stream_comment_spawn_min_interval_ms
+        max_ms = self.settings.stream_comment_spawn_max_interval_ms
+
+        if max_ms < min_ms:
+            max_ms = min_ms
+
+        interval_ms = random.randint(min_ms, max_ms)
+        self.stream_spawn_timer.start(interval_ms)
 
     def _find_available_lane(self, new_comment_width: int) -> int | None:
         """
