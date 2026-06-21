@@ -5,6 +5,97 @@ from pathlib import Path
 
 
 @dataclass(slots=True)
+class SessionProfile:
+    """Conservative structured interpretation of a user's stream label."""
+
+    title: str = ""
+    content_type: str = "unknown"
+    activity: str = ""
+    episode: str = ""
+    subtitle_language: str = ""
+    source_description: str = ""
+    status: str = "empty"
+    interpretation_error: str = ""
+
+    @classmethod
+    def pending(cls, description: str) -> "SessionProfile":
+        return cls(
+            source_description=description.strip(),
+            status="pending" if description.strip() else "empty",
+        )
+
+    @classmethod
+    def fallback(
+        cls,
+        description: str,
+        error: str = "",
+    ) -> "SessionProfile":
+        return cls(
+            source_description=description.strip(),
+            status="fallback",
+            interpretation_error=error.strip(),
+        )
+
+    @classmethod
+    def from_mapping(
+        cls,
+        data: dict[str, object],
+        description: str,
+    ) -> "SessionProfile":
+        allowed_types = {
+            "unknown",
+            "anime",
+            "game",
+            "video",
+            "manga",
+            "other",
+        }
+
+        def clean(key: str) -> str:
+            value = data.get(key)
+            return value.strip() if isinstance(value, str) else ""
+
+        content_type = clean("content_type").lower()
+        if content_type not in allowed_types:
+            content_type = "unknown"
+
+        return cls(
+            title=clean("title"),
+            content_type=content_type,
+            activity=clean("activity"),
+            episode=clean("episode"),
+            subtitle_language=clean("subtitle_language"),
+            source_description=description.strip(),
+            status="interpreted",
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "title": self.title or None,
+            "content_type": self.content_type,
+            "activity": self.activity or None,
+            "episode": self.episode or None,
+            "subtitle_language": self.subtitle_language or None,
+            "source_description": self.source_description,
+            "status": self.status,
+            "interpretation_error": self.interpretation_error or None,
+        }
+
+    def to_prompt_text(self) -> str:
+        fields = [
+            f"Title: {self.title or 'unknown'}",
+            f"Content type: {self.content_type or 'unknown'}",
+            f"Activity: {self.activity or 'unknown'}",
+            f"Episode/chapter: {self.episode or 'unknown'}",
+            (
+                "Subtitle language: "
+                f"{self.subtitle_language or 'unknown'}"
+            ),
+        ]
+        return "\n".join(f"- {field}" for field in fields)
+
+
+@dataclass(slots=True)
 class AppSettings:
     """Runtime settings shared across modules."""
     first_capture_delay_ms: int = 1500
@@ -27,6 +118,10 @@ class AppSettings:
     history_image_jpeg_quality: int = 42
     api_max_output_tokens: int = 512
     use_streaming_api: bool = True
+
+    # Stable user-provided and interpreted context for this viewing session.
+    user_stream_description: str = ""
+    session_profile: SessionProfile = field(default_factory=SessionProfile)
 
     # Testing / logging
     save_captures: bool = True

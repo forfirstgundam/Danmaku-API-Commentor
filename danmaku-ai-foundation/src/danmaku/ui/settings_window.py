@@ -17,12 +17,13 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSpinBox,
     QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from danmaku.capture.capture_service import list_windows
-from danmaku.models import AppSettings
+from danmaku.models import AppSettings, SessionProfile
 
 
 APP_STYLE = """
@@ -175,6 +176,7 @@ class SettingsWindow(QWidget):
 
     start_requested = pyqtSignal()
     stop_requested = pyqtSignal()
+    session_profile_updated = pyqtSignal()
 
     def __init__(self, settings: AppSettings) -> None:
         super().__init__()
@@ -204,6 +206,7 @@ class SettingsWindow(QWidget):
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_api_tab(), "API")
+        self.tabs.addTab(self._build_context_tab(), "Context")
         self.tabs.addTab(self._build_capture_tab(), "Capture")
         self.tabs.addTab(self._build_logging_tab(), "Logging")
         self.tabs.addTab(
@@ -303,6 +306,94 @@ class SettingsWindow(QWidget):
             self._update_api_key_placeholder
         )
         self._update_api_key_placeholder()
+        return tab
+
+    def _build_context_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        description_group = QGroupBox("Stream Description")
+        description_layout = QVBoxLayout()
+
+        description_help = QLabel(
+            "Write a short, natural description such as “.hack//SIGN "
+            "watching” or “Pokémon Black playthrough”. A new description "
+            "is interpreted once when the first API request starts."
+        )
+        description_help.setWordWrap(True)
+
+        self.stream_description_input = QTextEdit()
+        self.stream_description_input.setMinimumHeight(120)
+        self.stream_description_input.setPlaceholderText(
+            ".hack//SIGN watching\nPokémon Black playthrough"
+        )
+        self.stream_description_input.setPlainText(
+            self.settings.user_stream_description
+        )
+
+        description_layout.addWidget(description_help)
+        description_layout.addWidget(self.stream_description_input)
+        description_group.setLayout(description_layout)
+
+        profile_group = QGroupBox("Interpreted Session Profile")
+        profile_form = self._new_form()
+        profile = self.settings.session_profile
+
+        self.profile_title_input = QLineEdit(profile.title)
+
+        self.profile_content_type_input = QComboBox()
+        for label, value in (
+            ("Unknown", "unknown"),
+            ("Anime", "anime"),
+            ("Game", "game"),
+            ("Video", "video"),
+            ("Manga", "manga"),
+            ("Other", "other"),
+        ):
+            self.profile_content_type_input.addItem(label, value)
+        type_index = self.profile_content_type_input.findData(
+            profile.content_type
+        )
+        self.profile_content_type_input.setCurrentIndex(max(0, type_index))
+
+        self.profile_activity_input = QLineEdit(profile.activity)
+        self.profile_episode_input = QLineEdit(profile.episode)
+        self.profile_episode_input.setPlaceholderText("Unknown")
+        self.profile_subtitle_input = QLineEdit(profile.subtitle_language)
+        self.profile_subtitle_input.setPlaceholderText("Unknown")
+
+        self.profile_status_label = QLabel()
+        self.profile_status_label.setWordWrap(True)
+        self._show_profile_status(profile)
+
+        self.apply_profile_button = QPushButton("Use edited profile")
+        self.apply_profile_button.setObjectName("RefreshButton")
+        self.apply_profile_button.clicked.connect(
+            self._on_apply_profile_clicked
+        )
+
+        profile_form.addRow("Title", self.profile_title_input)
+        profile_form.addRow(
+            "Content type",
+            self.profile_content_type_input,
+        )
+        profile_form.addRow("Activity", self.profile_activity_input)
+        profile_form.addRow("Episode/chapter", self.profile_episode_input)
+        profile_form.addRow(
+            "Subtitle language",
+            self.profile_subtitle_input,
+        )
+        profile_form.addRow("Status", self.profile_status_label)
+        profile_form.addRow("", self.apply_profile_button)
+        profile_group.setLayout(profile_form)
+
+        layout.addWidget(description_group)
+        layout.addWidget(profile_group)
+        layout.addStretch()
+
+        self.stream_description_input.textChanged.connect(
+            self._on_stream_description_changed
+        )
         return tab
 
     def _build_capture_tab(self) -> QWidget:
@@ -603,6 +694,10 @@ class SettingsWindow(QWidget):
         self.settings.api_max_output_tokens = (
             self.max_output_tokens_input.value()
         )
+        self.settings.user_stream_description = (
+            self.stream_description_input.toPlainText().strip()
+        )
+        self._apply_profile_fields(mark_edited=False)
 
         self.settings.target_window_handle = int(
             self.window_selector.currentData() or 0
@@ -728,6 +823,66 @@ class SettingsWindow(QWidget):
 
     def _warn(self, title: str, message: str) -> None:
         QMessageBox.warning(self, title, message)
+
+    def _apply_profile_fields(self, *, mark_edited: bool) -> None:
+        profile = self.settings.session_profile
+        profile.title = self.profile_title_input.text().strip()
+        profile.content_type = (
+            self.profile_content_type_input.currentData() or "unknown"
+        )
+        profile.activity = self.profile_activity_input.text().strip()
+        profile.episode = self.profile_episode_input.text().strip()
+        profile.subtitle_language = (
+            self.profile_subtitle_input.text().strip()
+        )
+
+        if mark_edited:
+            description = (
+                self.stream_description_input.toPlainText().strip()
+            )
+            self.settings.user_stream_description = description
+            profile.source_description = description
+            profile.status = "edited"
+            profile.interpretation_error = ""
+            self._show_profile_status(profile)
+
+    def _on_apply_profile_clicked(self) -> None:
+        self._apply_profile_fields(mark_edited=True)
+        self.session_profile_updated.emit()
+
+    def _on_stream_description_changed(self) -> None:
+        description = self.stream_description_input.toPlainText().strip()
+        if description != self.settings.session_profile.source_description:
+            self.profile_status_label.setText(
+                "Description changed; it will be interpreted on the first "
+                "API request. Use ‘Use edited profile’ to keep the fields "
+                "above instead."
+            )
+
+    def set_session_profile(self, profile: SessionProfile) -> None:
+        """Display a profile produced by the background API worker."""
+        self.profile_title_input.setText(profile.title)
+        type_index = self.profile_content_type_input.findData(
+            profile.content_type
+        )
+        self.profile_content_type_input.setCurrentIndex(max(0, type_index))
+        self.profile_activity_input.setText(profile.activity)
+        self.profile_episode_input.setText(profile.episode)
+        self.profile_subtitle_input.setText(profile.subtitle_language)
+        self._show_profile_status(profile)
+
+    def _show_profile_status(self, profile: SessionProfile) -> None:
+        labels = {
+            "empty": "No stream description provided.",
+            "pending": "Waiting for the first API request.",
+            "interpreted": "Interpreted by the session model.",
+            "fallback": "Using the raw description because interpretation failed.",
+            "edited": "Using the profile edited by the user.",
+        }
+        message = labels.get(profile.status, profile.status or "Not generated")
+        if profile.interpretation_error:
+            message += f" Error: {profile.interpretation_error}"
+        self.profile_status_label.setText(message)
 
     def _load_windows(self) -> None:
         current_handle = (

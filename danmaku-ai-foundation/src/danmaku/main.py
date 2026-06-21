@@ -13,7 +13,12 @@ from PyQt5.QtWidgets import QApplication
 from danmaku.api.llm_client import LLMClient
 from danmaku.capture.capture_service import CaptureService
 from danmaku.config import load_settings_from_env
-from danmaku.models import AppSettings, CaptureFrame, CommentBatch
+from danmaku.models import (
+    AppSettings,
+    CaptureFrame,
+    CommentBatch,
+    SessionProfile,
+)
 from danmaku.overlay.overlay_window import OverlayWindow
 from danmaku.ui.settings_window import SettingsWindow
 
@@ -23,6 +28,7 @@ class AppSignals(QObject):
     sample_error = pyqtSignal(str)
     partial_comment_ready = pyqtSignal(object)
     comments_ready = pyqtSignal(object)
+    session_profile_ready = pyqtSignal(object)
     error = pyqtSignal(str)
 
 
@@ -73,6 +79,9 @@ class DanmakuApp:
         self.signals.sample_error.connect(self._on_sample_error)
         self.signals.partial_comment_ready.connect(self._on_partial_comment_ready)
         self.signals.comments_ready.connect(self._on_comments_ready)
+        self.signals.session_profile_ready.connect(
+            self._on_session_profile_ready
+        )
         self.signals.error.connect(self._on_error)
 
         self.capture_service = CaptureService(
@@ -91,6 +100,9 @@ class DanmakuApp:
 
         self.settings_window.start_requested.connect(self.start)
         self.settings_window.stop_requested.connect(self.stop)
+        self.settings_window.session_profile_updated.connect(
+            self._on_manual_session_profile_updated
+        )
 
         self.capture_timer = QTimer()
         self.capture_timer.timeout.connect(self._trigger_capture_and_api)
@@ -103,6 +115,13 @@ class DanmakuApp:
 
     def start(self) -> None:
         self.settings_window.apply_to_settings()
+
+        description = self.settings.user_stream_description.strip()
+        if description != self.settings.session_profile.source_description:
+            self.settings.session_profile = SessionProfile.pending(description)
+            self.settings_window.set_session_profile(
+                self.settings.session_profile
+            )
 
         # Overlay geometry, font, lanes, and timers are calculated when the
         # widget is constructed. Recreate it so settings changed in the UI
@@ -121,6 +140,7 @@ class DanmakuApp:
         self.waiting_for_first_request = not self.settings.use_multi_frame_context
 
         self._initialize_run_logging()
+        self._save_session_context()
 
         self.capture_service = CaptureService(
             output_dir=self.settings.capture_output_dir,
@@ -242,6 +262,10 @@ class DanmakuApp:
             max_output_tokens=self.settings.api_max_output_tokens,
             save_api_images=self.settings.save_api_images,
             api_image_output_dir=self.settings.api_image_output_dir,
+            user_stream_description=(
+                self.settings.user_stream_description
+            ),
+            session_profile=self.settings.session_profile,
         )
 
     def _build_fallback_llm_client(self) -> LLMClient | None:
@@ -270,7 +294,68 @@ class DanmakuApp:
             max_output_tokens=self.settings.api_max_output_tokens,
             save_api_images=self.settings.save_api_images,
             api_image_output_dir=self.settings.api_image_output_dir,
+            user_stream_description=(
+                self.settings.user_stream_description
+            ),
+            session_profile=self.settings.session_profile,
         )
+
+    def _sync_session_context_clients(self) -> None:
+        description = self.settings.user_stream_description
+        profile = self.settings.session_profile
+        self.llm_client.set_session_context(description, profile)
+        if self.fallback_llm_client is not None:
+            self.fallback_llm_client.set_session_context(
+                description,
+                profile,
+            )
+
+    def _ensure_session_profile(self) -> tuple[float, str]:
+        description = self.settings.user_stream_description.strip()
+        profile = self.settings.session_profile
+
+        if not description:
+            if profile.status != "empty":
+                profile = SessionProfile()
+                self.settings.session_profile = profile
+            self._sync_session_context_clients()
+            return 0.0, ""
+
+        reusable_statuses = {"interpreted", "edited", "fallback"}
+        if (
+            profile.source_description == description
+            and profile.status in reusable_statuses
+        ):
+            self._sync_session_context_clients()
+            return 0.0, profile.interpretation_error
+
+        started = time.perf_counter()
+        profile, error = self.llm_client.interpret_session_profile(
+            description
+        )
+        duration = round(time.perf_counter() - started, 3)
+
+        self.settings.session_profile = profile
+        self._sync_session_context_clients()
+        self._save_session_context()
+        self.signals.session_profile_ready.emit(profile)
+
+        print(
+            "[profile] prepared "
+            f"status={profile.status}, title={profile.title or '(unknown)'}, "
+            f"type={profile.content_type}, duration={duration}s"
+        )
+        return duration, error
+
+    def _on_session_profile_ready(self, payload: object) -> None:
+        if isinstance(payload, SessionProfile):
+            self.settings_window.set_session_profile(payload)
+
+    def _on_manual_session_profile_updated(self) -> None:
+        self._sync_session_context_clients()
+        if self.is_running:
+            self._save_session_context()
+        print("[profile] using user-edited session profile")
 
     def _build_context_summary(self) -> str:
         """
@@ -422,6 +507,11 @@ class DanmakuApp:
     ) -> None:
         try:
             worker_started = time.perf_counter()
+
+            (
+                profile_interpretation_duration_sec,
+                profile_interpretation_error,
+            ) = self._ensure_session_profile()
 
             capture_started = time.perf_counter()
             with self.capture_lock:
@@ -603,6 +693,12 @@ class DanmakuApp:
                     else None
                 ),
                 "streamed_comment_count": streamed_comment_count,
+                "profile_interpretation_duration_sec": (
+                    profile_interpretation_duration_sec
+                ),
+                "profile_interpretation_error": (
+                    profile_interpretation_error
+                ),
                 "fresh_capture_for_request": True,
                 "historical_frames_sent_count": len(historical_frames),
                 "frames_sent_count": len(frames),
@@ -963,6 +1059,10 @@ class DanmakuApp:
             "situations_before_request": situations_before_request or [],
             "recent_comments_sent": recent_comments_sent or [],
             "context_sent": context_sent,
+            "user_stream_description": (
+                self.settings.user_stream_description
+            ),
+            "session_profile": self.settings.session_profile.to_dict(),
             "frames_sent": [
                 {
                     "image_path": str(item.image_path),
@@ -1107,6 +1207,28 @@ class DanmakuApp:
         print(
             "[log] comments="
             f"{self.settings.comment_log_path.resolve()}"
+        )
+
+    def _save_session_context(self) -> None:
+        run_dir = self.settings.run_log_dir
+        if not run_dir:
+            return
+
+        run_dir.mkdir(parents=True, exist_ok=True)
+        path = run_dir / "session_context.json"
+        record = {
+            "schema_version": 1,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "user_stream_description": (
+                self.settings.user_stream_description
+            ),
+            "interpreted_stream_profile": (
+                self.settings.session_profile.to_dict()
+            ),
+        }
+        path.write_text(
+            json.dumps(record, ensure_ascii=False, indent=2),
+            encoding="utf-8",
         )
 
     def _on_error(self, message: str) -> None:
