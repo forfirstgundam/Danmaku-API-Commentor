@@ -140,7 +140,6 @@ class DanmakuApp:
         self.waiting_for_first_request = not self.settings.use_multi_frame_context
 
         self._initialize_run_logging()
-        self._save_session_context()
 
         self.capture_service = CaptureService(
             output_dir=self.settings.capture_output_dir,
@@ -151,6 +150,8 @@ class DanmakuApp:
         )
         self.llm_client = self._build_llm_client()
         self.fallback_llm_client = self._build_fallback_llm_client()
+        self._save_system_prompt_snapshot()
+        self._save_session_context()
 
         print("[app] starting")
         print(f"[app] dummy_api={self.settings.use_dummy_api}")
@@ -746,6 +747,7 @@ class DanmakuApp:
                     "situations_before_request": situations_before_request,
                     "recent_comments_sent": recent_comments_for_api,
                     "streamed_comment_count": streamed_comment_count,
+                    "user_prompt_sent": self.llm_client.last_user_prompt,
                 }
             )
 
@@ -769,6 +771,7 @@ class DanmakuApp:
         )
         recent_comments_sent = data.get("recent_comments_sent", [])
         streamed_comment_count = data.get("streamed_comment_count", 0)
+        user_prompt_sent = data.get("user_prompt_sent", "")
 
         if not isinstance(frame, CaptureFrame):
             print("[app] invalid frame payload")
@@ -807,6 +810,11 @@ class DanmakuApp:
                     ),
                     frames_sent=(
                         frames_sent if isinstance(frames_sent, list) else []
+                    ),
+                    user_prompt_sent=(
+                        user_prompt_sent
+                        if isinstance(user_prompt_sent, str)
+                        else ""
                     ),
                 )
 
@@ -891,6 +899,11 @@ class DanmakuApp:
                 ),
                 frames_sent=(
                     frames_sent if isinstance(frames_sent, list) else []
+                ),
+                user_prompt_sent=(
+                    user_prompt_sent
+                    if isinstance(user_prompt_sent, str)
+                    else ""
                 ),
             )
 
@@ -1039,6 +1052,7 @@ class DanmakuApp:
         situations_before_request: list[str] | None = None,
         recent_comments_sent: list[str] | None = None,
         frames_sent: list[CaptureFrame] | None = None,
+        user_prompt_sent: str = "",
     ) -> None:
         self.settings.comment_log_path.parent.mkdir(
             parents=True,
@@ -1059,6 +1073,10 @@ class DanmakuApp:
             "situations_before_request": situations_before_request or [],
             "recent_comments_sent": recent_comments_sent or [],
             "context_sent": context_sent,
+            "system_prompt_file": str(
+                self.settings.run_log_dir / "system_prompt_sent.txt"
+            ),
+            "user_prompt_sent": user_prompt_sent,
             "user_stream_description": (
                 self.settings.user_stream_description
             ),
@@ -1225,9 +1243,19 @@ class DanmakuApp:
             "interpreted_stream_profile": (
                 self.settings.session_profile.to_dict()
             ),
+            "profile_interpretation_prompt_sent": (
+                self.llm_client.last_profile_prompt
+            ),
         }
         path.write_text(
             json.dumps(record, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _save_system_prompt_snapshot(self) -> None:
+        path = self.settings.run_log_dir / "system_prompt_sent.txt"
+        path.write_text(
+            self.llm_client.prompt_builder.build_system_prompt(),
             encoding="utf-8",
         )
 

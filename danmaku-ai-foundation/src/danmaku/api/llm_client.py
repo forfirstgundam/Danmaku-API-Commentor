@@ -52,6 +52,9 @@ class LLMClient:
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.user_stream_description = user_stream_description.strip()
         self.session_profile = session_profile or SessionProfile()
+        self.last_system_prompt = ""
+        self.last_user_prompt = ""
+        self.last_profile_prompt = ""
         self._openai_client = None
 
         if self.api_provider == "openai" and self.api_key and not self.use_dummy_api:
@@ -81,6 +84,9 @@ class LLMClient:
             return SessionProfile.fallback(clean_description, message), message
 
         try:
+            self.last_profile_prompt = self._session_profile_prompt(
+                clean_description
+            )
             if self.api_provider == "openai":
                 profile = self._interpret_profile_with_openai(
                     clean_description
@@ -233,6 +239,12 @@ subtitle_language.
         on_comment: Callable[[str], None] | None = None,
     ) -> CommentBatch:
         if self.use_dummy_api or not self.api_key:
+            self._build_comment_prompts(
+                frame,
+                previous_summary,
+                previous_comments or [],
+                context_frames or [],
+            )
             return self._dummy_response()
 
         try:
@@ -262,6 +274,26 @@ subtitle_language.
             print(f"[api] {message}")
             return CommentBatch.error(message)
 
+    def _build_comment_prompts(
+        self,
+        frame: CaptureFrame,
+        previous_summary: str,
+        previous_comments: list[str],
+        context_frames: list[CaptureFrame],
+    ) -> tuple[str, str]:
+        system_prompt = self.prompt_builder.build_system_prompt()
+        user_prompt = self.prompt_builder.build_user_prompt(
+            frame,
+            previous_summary,
+            previous_comments,
+            context_frames,
+            self.user_stream_description,
+            self.session_profile,
+        )
+        self.last_system_prompt = system_prompt
+        self.last_user_prompt = user_prompt
+        return system_prompt, user_prompt
+
     def _generate_with_gemini(
         self,
         frame: CaptureFrame,
@@ -272,14 +304,11 @@ subtitle_language.
         from google import genai
         from google.genai import types
 
-        system_prompt = self.prompt_builder.build_system_prompt()
-        user_prompt = self.prompt_builder.build_user_prompt(
+        system_prompt, user_prompt = self._build_comment_prompts(
             frame,
             previous_summary,
             previous_comments,
             context_frames,
-            self.user_stream_description,
-            self.session_profile,
         )
 
         client = genai.Client(api_key=self.api_key)
@@ -323,14 +352,11 @@ subtitle_language.
         from google import genai
         from google.genai import types
 
-        system_prompt = self.prompt_builder.build_system_prompt()
-        user_prompt = self.prompt_builder.build_user_prompt(
+        system_prompt, user_prompt = self._build_comment_prompts(
             frame,
             previous_summary,
             previous_comments,
             context_frames,
-            self.user_stream_description,
-            self.session_profile,
         )
 
         client = genai.Client(api_key=self.api_key)
@@ -385,14 +411,11 @@ subtitle_language.
         previous_comments: list[str],
         context_frames: list[CaptureFrame],
     ) -> CommentBatch:
-        system_prompt = self.prompt_builder.build_system_prompt()
-        user_prompt = self.prompt_builder.build_user_prompt(
+        system_prompt, user_prompt = self._build_comment_prompts(
             frame,
             previous_summary,
             previous_comments,
             context_frames,
-            self.user_stream_description,
-            self.session_profile,
         )
         content: list[dict[str, object]] = [
             {"type": "input_text", "text": user_prompt}
