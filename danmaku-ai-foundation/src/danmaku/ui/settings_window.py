@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PyQt5.QtCore import pyqtSignal
-from danmaku.capture.capture_service import list_window_titles
+from danmaku.capture.capture_service import list_windows
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -171,7 +171,14 @@ class SettingsWindow(QWidget):
         self.settings.api_image_jpeg_quality = self.api_image_quality_input.value()
         self.settings.api_max_output_tokens = self.max_output_tokens_input.value()
         self.settings.font_size = self.font_size_input.value()
-        self.settings.target_window_title = self.window_selector.currentData() or ""
+        self.settings.target_window_handle = int(
+            self.window_selector.currentData() or 0
+        )
+        self.settings.target_window_title = (
+            self.window_selector.currentText()
+            if self.settings.target_window_handle
+            else ""
+        )
 
     def set_running(self, is_running: bool) -> None:
         self.status_label.setText(
@@ -187,20 +194,20 @@ class SettingsWindow(QWidget):
         self.stop_requested.emit()
 
     def _load_window_titles(self) -> None:
-        current = self.window_selector.currentText() if hasattr(
-            self, "window_selector") else ""
+        current_handle = self.window_selector.currentData() if hasattr(
+            self, "window_selector") else 0
 
         self.window_selector.clear()
         self.window_selector.addItem("Full screen", "")
 
         try:
-            for title in list_window_titles():
-                self.window_selector.addItem(title, title)
+            for handle, title in list_windows():
+                self.window_selector.addItem(title, handle)
         except Exception as exc:
             print(f"[ui] failed to list windows: {exc}")
 
-        if current:
-            index = self.window_selector.findText(current)
+        if current_handle:
+            index = self.window_selector.findData(current_handle)
             if index >= 0:
                 self.window_selector.setCurrentIndex(index)
 

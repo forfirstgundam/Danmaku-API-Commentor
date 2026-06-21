@@ -49,8 +49,12 @@ class PromptBuilder:
         )
 
         return f"""
-Analyze the sampled screenshot sequence and generate Korean
-Niconico-style danmaku reaction comments.
+Generate Korean Niconico-style danmaku reactions using a sparse set of
+visual observations from the recent viewing interval.
+
+The attached images are evidence about what may have appeared during the
+interval. They are not a complete video clip, not consecutive shots, and not
+a reliable record of the transition between one image and the next.
 
 You are given five kinds of information:
 

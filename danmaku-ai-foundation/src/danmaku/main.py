@@ -77,6 +77,7 @@ class DanmakuApp:
         self.capture_service = CaptureService(
             output_dir=self.settings.capture_output_dir,
             target_window_title=self.settings.target_window_title,
+            target_window_handle=self.settings.target_window_handle,
             image_format="JPEG",
             jpeg_quality=self.settings.sample_capture_jpeg_quality,
         )
@@ -115,6 +116,7 @@ class DanmakuApp:
         self.capture_service = CaptureService(
             output_dir=self.settings.capture_output_dir,
             target_window_title=self.settings.target_window_title,
+            target_window_handle=self.settings.target_window_handle,
             image_format="JPEG",
             jpeg_quality=self.settings.sample_capture_jpeg_quality,
         )
@@ -174,7 +176,8 @@ class DanmakuApp:
         )
         print(
             "[app] target_window="
-            f"{self.settings.target_window_title or 'Full screen'}"
+            f"{self.settings.target_window_title or 'Full screen'}, "
+            f"handle={self.settings.target_window_handle or '(none)'}"
         )
 
         interval_ms = self.settings.capture_interval_seconds * 1000
