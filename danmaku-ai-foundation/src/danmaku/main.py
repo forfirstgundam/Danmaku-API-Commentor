@@ -74,6 +74,7 @@ class DanmakuApp:
 
         self.llm_client = self._build_llm_client()
         self.fallback_llm_client = self._build_fallback_llm_client()
+        
 
         self.overlay = OverlayWindow(settings=self.settings)
         self.settings_window = SettingsWindow(settings=self.settings)
@@ -101,6 +102,9 @@ class DanmakuApp:
         )
         self.llm_client = self._build_llm_client()
         self.fallback_llm_client = self._build_fallback_llm_client()
+        self.overlay.hide()
+        self.overlay.deleteLater()
+        self.overlay = OverlayWindow(settings=self.settings)
 
         print("[app] starting")
         print(f"[app] dummy_api={self.settings.use_dummy_api}")
