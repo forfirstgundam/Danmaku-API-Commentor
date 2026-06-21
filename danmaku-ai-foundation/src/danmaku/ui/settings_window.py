@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QScrollArea,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -29,81 +30,142 @@ QWidget {
     background-color: #111827;
     color: #E5E7EB;
     font-family: "Segoe UI";
-    font-size: 14px;
+    font-size: 16pt;
 }
+
 QLabel#TitleLabel {
     color: #F9FAFB;
-    font-size: 26px;
+    font-size: 25pt;
     font-weight: 700;
 }
+
 QLabel#StatusLabel {
     color: #93C5FD;
+    font-size: 14pt;
     font-weight: 600;
 }
+
+/* Tabs */
 QTabWidget::pane {
     border: 1px solid #374151;
-    border-radius: 10px;
+    border-radius: 12px;
     background-color: #111827;
 }
+
 QTabBar::tab {
     background-color: #1F2937;
     color: #D1D5DB;
-    padding: 9px 16px;
-    margin-right: 2px;
+    min-width: 90px;
+    min-height: 34px;
+    padding: 10px 22px;
+    margin-right: 3px;
+    font-size: 14pt;
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
 }
+
 QTabBar::tab:selected {
     background-color: #2563EB;
     color: white;
 }
+
+/* Section boxes */
 QGroupBox {
     border: 1px solid #374151;
-    border-radius: 10px;
-    margin-top: 16px;
-    padding: 14px;
+    border-radius: 14px;
+    margin-top: 24px;
+    padding: 22px;
     background-color: #1F2937;
     color: #93C5FD;
+    font-size: 15pt;
     font-weight: 700;
 }
+
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 12px;
-    padding: 0 5px;
+    left: 16px;
+    padding: 0 8px;
 }
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+
+/* Input controls */
+QLineEdit,
+QComboBox,
+QSpinBox,
+QDoubleSpinBox,
+QTextEdit {
     background-color: #111827;
     border: 1px solid #4B5563;
-    border-radius: 6px;
-    padding: 6px;
+    border-radius: 8px;
+    min-height: 40px;
+    padding: 7px 12px;
     color: #F9FAFB;
+    font-size: 15pt;
 }
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus,
-QDoubleSpinBox:focus {
-    border: 1px solid #60A5FA;
+
+QLineEdit:focus,
+QComboBox:focus,
+QSpinBox:focus,
+QDoubleSpinBox:focus,
+QTextEdit:focus {
+    border: 2px solid #60A5FA;
 }
-QCheckBox {
+
+/* Larger dropdown area */
+QComboBox::drop-down {
+    width: 34px;
+    border: none;
+}
+
+/* Larger checkbox/radio text and click target */
+QCheckBox,
+QRadioButton {
     color: #E5E7EB;
-    spacing: 7px;
+    min-height: 34px;
+    spacing: 12px;
+    font-size: 14pt;
 }
+
+QCheckBox::indicator,
+QRadioButton::indicator {
+    width: 24px;
+    height: 24px;
+}
+
+/* Buttons */
 QPushButton {
     background-color: #2563EB;
     color: white;
     border: none;
-    border-radius: 8px;
-    padding: 9px 18px;
+    border-radius: 10px;
+    min-height: 42px;
+    padding: 7px 24px;
+    font-size: 14pt;
     font-weight: 700;
 }
+
 QPushButton:hover {
     background-color: #1D4ED8;
 }
+
 QPushButton:disabled {
-    background-color: #374151;
+    background-color: #4B5563;
     color: #9CA3AF;
 }
+
 QPushButton#StopButton {
+    background-color: #374151;
+}
+
+QPushButton#StopButton:hover {
     background-color: #4B5563;
 }
+
 QPushButton#RefreshButton {
     background-color: #0F766E;
+}
+
+QPushButton#RefreshButton:hover {
+    background-color: #0D9488;
 }
 """
 
@@ -143,8 +205,11 @@ class SettingsWindow(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_api_tab(), "API")
         self.tabs.addTab(self._build_capture_tab(), "Capture")
-        self.tabs.addTab(self._build_overlay_tab(), "Overlay")
         self.tabs.addTab(self._build_logging_tab(), "Logging")
+        self.tabs.addTab(
+            self._make_scrollable(self._build_overlay_tab()),
+            "Overlay",
+        )
 
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("StopButton")
@@ -653,6 +718,13 @@ class SettingsWindow(QWidget):
             return False
 
         return True
+    
+    def _make_scrollable(self, content: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setWidget(content)
+        return scroll
 
     def _warn(self, title: str, message: str) -> None:
         QMessageBox.warning(self, title, message)
