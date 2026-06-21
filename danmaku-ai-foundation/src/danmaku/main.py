@@ -64,6 +64,7 @@ class DanmakuApp:
         self.is_running = False
         self.is_busy = False
         self.is_sampling = False
+        self.capture_lock = threading.Lock()
         self.waiting_for_first_request = False
         self.frame_buffer: list[CaptureFrame] = []
 
@@ -317,7 +318,8 @@ class DanmakuApp:
     def _sample_capture_worker(self) -> None:
         try:
             capture_started = time.perf_counter()
-            frame = self.capture_service.capture()
+            with self.capture_lock:
+                frame = self.capture_service.capture()
             capture_duration_sec = round(
                 time.perf_counter() - capture_started,
                 3,
@@ -360,14 +362,15 @@ class DanmakuApp:
         self.is_sampling = False
         print(f"[capture] sample failed: {message}")
 
-    def _select_frames_for_request(self) -> list[CaptureFrame]:
-        if not self.frame_buffer:
+    def _select_historical_frames_for_request(self) -> list[CaptureFrame]:
+        if not self.settings.use_multi_frame_context or not self.frame_buffer:
             return []
 
-        if not self.settings.use_multi_frame_context:
-            return [self.frame_buffer[-1]]
-
-        requested_count = max(1, self.settings.frames_per_request)
+        # Reserve one slot for a fresh capture performed immediately before
+        # the API request. The sampler buffer supplies historical context only.
+        requested_count = max(0, self.settings.frames_per_request - 1)
+        if requested_count == 0:
+            return []
         frame_count = min(requested_count, len(self.frame_buffer))
 
         if frame_count == len(self.frame_buffer):
@@ -387,41 +390,52 @@ class DanmakuApp:
         if not self.is_running or self.is_busy:
             return
 
-        selected_frames = self._select_frames_for_request()
-        if not selected_frames:
-            print("[api] skipped request: no sampled frames available")
-            self._trigger_sample_capture()
+        # Avoid asking the capture backend for the same window from two worker
+        # threads simultaneously. Try again just after the sampler finishes.
+        if self.is_sampling:
+            QTimer.singleShot(100, self._trigger_capture_and_api)
             return
 
+        historical_frames = self._select_historical_frames_for_request()
         self.is_busy = True
         self.stream_batch_started = False
         self.streamed_comments_current_batch = []
 
-        frame_span_sec = round(
-            selected_frames[-1].timestamp - selected_frames[0].timestamp,
-            3,
-        )
-        print(
-            "[context] selected frames: "
-            f"count={len(selected_frames)}, span={frame_span_sec}s, "
-            f"ages={[round(selected_frames[-1].timestamp - item.timestamp, 2) for item in selected_frames]}"
-        )
-
         thread = threading.Thread(
             target=self._capture_and_generate_worker,
-            args=(selected_frames,),
+            args=(historical_frames,),
             daemon=True,
         )
         thread.start()
 
     def _capture_and_generate_worker(
         self,
-        frames: list[CaptureFrame],
+        historical_frames: list[CaptureFrame],
     ) -> None:
         try:
             worker_started = time.perf_counter()
-            frame = frames[-1]
-            context_frames = frames[:-1]
+
+            capture_started = time.perf_counter()
+            with self.capture_lock:
+                frame = self.capture_service.capture()
+            capture_duration_sec = round(
+                time.perf_counter() - capture_started,
+                3,
+            )
+            frames = [*historical_frames, frame]
+            context_frames = historical_frames
+
+            frame_span_sec = round(
+                frame.timestamp - frames[0].timestamp,
+                3,
+            )
+            print(
+                "[context] selected frames: "
+                f"history={len(historical_frames)}, total={len(frames)}, "
+                f"span={frame_span_sec}s, "
+                f"ages={[round(frame.timestamp - item.timestamp, 2) for item in frames]}, "
+                f"fresh_capture={capture_duration_sec}s"
+            )
 
             latest_frame_age_at_request_sec = round(
                 max(0.0, time.time() - frame.timestamp),
@@ -562,7 +576,7 @@ class DanmakuApp:
             api_finished = time.perf_counter()
 
             metrics = {
-                "capture_duration_sec": None,
+                "capture_duration_sec": capture_duration_sec,
                 "comment_after_capture_sec": round(
                     time.time() - frame.timestamp,
                     3,
@@ -581,6 +595,8 @@ class DanmakuApp:
                     else None
                 ),
                 "streamed_comment_count": streamed_comment_count,
+                "fresh_capture_for_request": True,
+                "historical_frames_sent_count": len(historical_frames),
                 "frames_sent_count": len(frames),
                 "frames_sent_span_sec": round(
                     frame.timestamp - frames[0].timestamp,
