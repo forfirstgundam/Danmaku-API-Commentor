@@ -103,6 +103,14 @@ class DanmakuApp:
 
     def start(self) -> None:
         self.settings_window.apply_to_settings()
+
+        # Overlay geometry, font, lanes, and timers are calculated when the
+        # widget is constructed. Recreate it so settings changed in the UI
+        # take effect for this run.
+        self.overlay.hide()
+        self.overlay.deleteLater()
+        self.overlay = OverlayWindow(settings=self.settings)
+
         self.consecutive_api_failures = 0
         self.stream_batch_started = False
         self.streamed_comments_current_batch = []
