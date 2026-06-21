@@ -28,8 +28,20 @@ class PromptBuilder:
         frame: CaptureFrame,
         previous_summary: str,
         previous_comments: list[str] | None = None,
+        context_frames: list[CaptureFrame] | None = None,
     ) -> str:
         ocr_text = frame.ocr_text or ""
+        frames = [*(context_frames or []), frame]
+        current_timestamp = frame.timestamp
+        frame_timeline = "\n".join(
+            (
+                f"- Frame {index + 1}: "
+                f"{max(0.0, current_timestamp - item.timestamp):.1f} seconds "
+                f"before the latest frame"
+                + (" (LATEST/CURRENT)" if item is frame else "")
+            )
+            for index, item in enumerate(frames)
+        )
         recent_comment_text = "\n".join(
             f"- {comment}"
             for comment in (previous_comments or [])
@@ -37,7 +49,12 @@ class PromptBuilder:
         )
 
         return f"""
-Analyze the current screenshot and generate Korean danmaku-style reaction comments.
+Generate Korean Niconico-style danmaku reactions using a sparse set of
+visual observations from the recent viewing interval.
+
+The attached images are evidence about what may have appeared during the
+interval. They are not a complete video clip, not consecutive shots, and not
+a reliable record of the transition between one image and the next.
 
 You are given five kinds of information:
 
@@ -53,8 +70,10 @@ ordered from oldest to newest.
 Text extracted from the dialogue or subtitle area.
 It may be incomplete or contain recognition errors.
 
-4. Current screenshot:
-The current visual state. This is the most important source of truth.
+4. Chronological screenshot sequence:
+Periodic samples from continuously playing content. The last attached image is
+the latest/current frame. It is the most recent source of visual truth, but it
+is not necessarily the most narratively important frame.
 
 5. Recent generated comments:
 Comments that were already generated recently.
@@ -68,6 +87,9 @@ Current OCR text:
 
 Recent generated comments:
 {recent_comment_text or "(none)"}
+
+Attached frame order, oldest to newest:
+{frame_timeline}
 
 Return strict JSON with this schema:
 {{
@@ -90,13 +112,29 @@ Comment requirements:
 - Generate 0 to 1 longer comment.
 
 Source-priority requirements:
-- The current screenshot is the most important source of truth.
-- If previous context conflicts with the current screenshot, trust the current screenshot.
+- The attached images are ordered from oldest to newest.
+- Frame {len(frames)} is the latest/current frame.
+- If previous context conflicts with clear visual evidence in the sampled
+  sequence, trust the visual evidence.
 - Use previous S and recent T snapshots to understand cut-off text,
   partial dialogue, and scene continuity.
 - OCR may be incomplete or incorrect; confirm it against the screenshot.
 - Do not invent dialogue, names, or events unsupported by the available information.
 - Do not overreact to one partial screenshot if recent T snapshots clarify it.
+
+Capture-timing requirements:
+- These images are periodic samples from continuously playing content, not
+  consecutive storyboard panels and not intentionally selected key moments.
+- Several seconds of unseen content may occur between attached frames.
+- Do not invent actions, dialogue, or transitions that happened in the gaps.
+- Do not assume every visual difference is an important scene transition.
+- A missing character may simply be off-camera, and a close-up may only be a
+  temporary camera angle.
+- Loading screens, black frames, playback controls, desktop windows, and other
+  temporary obstructions may be incidental capture states.
+- Use the sequence to identify stable facts, dialogue progression, and visible
+  actions. If the missing interval makes something uncertain, leave it
+  uncertain rather than inventing a connection.
 
 Scene-change requirements:
 - Use "[SCENE_CHANGE]" only as a full context-reset signal: the viewer has
@@ -127,6 +165,11 @@ Summary S(n) requirements:
 - Keep the summary factual and objective.
 - Include only facts directly visible, explicitly stated in dialogue/text, or
   already established in S(n-1).
+- Add information from the sampled frames to S only when it is a stable story
+  fact or explicit event useful later.
+- Do not add temporary capture artifacts, camera framing, loading states,
+  playback controls, or unrelated windows to S unless they clearly represent
+  a genuine switch to different content.
 - Describe observable evidence instead of interpretation: use "the character
   frowns" rather than "the mood becomes confrontational."
 - Do not infer mood, tone, motives, relationships, future events, danger,
@@ -136,7 +179,7 @@ Summary S(n) requirements:
   progression from the beginning.
 
 Current situation T(n) requirements:
-- "current_situation" describes only the current screenshot and moment.
+- "current_situation" describes only the latest attached frame and moment.
 - It must be factual and objective.
 - Use exactly 1 concise sentence.
 - It may mention visible dialogue, menu state, characters, actions,

@@ -28,6 +28,8 @@ class LLMClient:
         send_screenshot: bool = True,
         image_max_dimension: int = 768,
         image_jpeg_quality: int = 72,
+        history_image_max_dimension: int = 384,
+        history_image_jpeg_quality: int = 42,
         max_output_tokens: int = 512,
         save_api_images: bool = False,
         api_image_output_dir: Path | None = None,
@@ -40,6 +42,8 @@ class LLMClient:
         self.send_screenshot = send_screenshot
         self.image_max_dimension = image_max_dimension
         self.image_jpeg_quality = image_jpeg_quality
+        self.history_image_max_dimension = history_image_max_dimension
+        self.history_image_jpeg_quality = history_image_jpeg_quality
         self.max_output_tokens = max_output_tokens
         self.save_api_images = save_api_images
         self.api_image_output_dir = api_image_output_dir
@@ -56,6 +60,7 @@ class LLMClient:
         frame: CaptureFrame,
         previous_summary: str = "",
         previous_comments: list[str] | None = None,
+        context_frames: list[CaptureFrame] | None = None,
         use_streaming: bool = False,
         on_comment: Callable[[str], None] | None = None,
     ) -> CommentBatch:
@@ -68,18 +73,21 @@ class LLMClient:
                     frame,
                     previous_summary,
                     previous_comments or [],
+                    context_frames or [],
                 )
             if use_streaming and on_comment is not None:
                 return self._generate_with_gemini_stream(
                     frame,
                     previous_summary,
                     previous_comments or [],
+                    context_frames or [],
                     on_comment,
                 )
             return self._generate_with_gemini(
                 frame,
                 previous_summary,
                 previous_comments or [],
+                context_frames or [],
             )
         except Exception as exc:
             message = f"{self.api_provider.title()} call failed: {exc}"
@@ -91,6 +99,7 @@ class LLMClient:
         frame: CaptureFrame,
         previous_summary: str,
         previous_comments: list[str],
+        context_frames: list[CaptureFrame],
     ) -> CommentBatch:
         from google import genai
         from google.genai import types
@@ -100,19 +109,17 @@ class LLMClient:
             frame,
             previous_summary,
             previous_comments,
+            context_frames,
         )
 
         client = genai.Client(api_key=self.api_key)
 
-        contents: list[object] = [user_prompt]
-
-        if self.send_screenshot:
-            image_bytes, mime_type = self._build_api_image(frame)
-            contents.append(
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-            )
-        else:
-            print("[api] text-only request: screenshot not sent")
+        contents = self._build_gemini_contents(
+            types,
+            user_prompt,
+            frame,
+            context_frames,
+        )
 
         thinking_config = None
         if self.model_name.startswith("gemini-2.5-flash"):
@@ -140,6 +147,7 @@ class LLMClient:
         frame: CaptureFrame,
         previous_summary: str,
         previous_comments: list[str],
+        context_frames: list[CaptureFrame],
         on_comment: Callable[[str], None],
     ) -> CommentBatch:
         from google import genai
@@ -150,18 +158,16 @@ class LLMClient:
             frame,
             previous_summary,
             previous_comments,
+            context_frames,
         )
 
         client = genai.Client(api_key=self.api_key)
-        contents: list[object] = [user_prompt]
-
-        if self.send_screenshot:
-            image_bytes, mime_type = self._build_api_image(frame)
-            contents.append(
-                types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
-            )
-        else:
-            print("[api] text-only request: screenshot not sent")
+        contents = self._build_gemini_contents(
+            types,
+            user_prompt,
+            frame,
+            context_frames,
+        )
 
         thinking_config = None
         if self.model_name.startswith("gemini-2.5-flash"):
@@ -205,27 +211,38 @@ class LLMClient:
         frame: CaptureFrame,
         previous_summary: str,
         previous_comments: list[str],
+        context_frames: list[CaptureFrame],
     ) -> CommentBatch:
         system_prompt = self.prompt_builder.build_system_prompt()
         user_prompt = self.prompt_builder.build_user_prompt(
             frame,
             previous_summary,
             previous_comments,
+            context_frames,
         )
         content: list[dict[str, object]] = [
             {"type": "input_text", "text": user_prompt}
         ]
 
         if self.send_screenshot:
-            image_bytes, mime_type = self._build_api_image(frame)
-            encoded = base64.b64encode(image_bytes).decode("ascii")
-            content.append(
-                {
-                    "type": "input_image",
-                    "image_url": f"data:{mime_type};base64,{encoded}",
-                    "detail": "low",
-                }
-            )
+            frames = [*context_frames, frame]
+            for index, item in enumerate(frames, start=1):
+                is_current = index == len(frames)
+                label = self._frame_label(index, len(frames), item, frame)
+                content.append({"type": "input_text", "text": label})
+                image_bytes, mime_type = self._build_api_image(
+                    item,
+                    is_current=is_current,
+                    frame_index=index,
+                )
+                encoded = base64.b64encode(image_bytes).decode("ascii")
+                content.append(
+                    {
+                        "type": "input_image",
+                        "image_url": f"data:{mime_type};base64,{encoded}",
+                        "detail": "low",
+                    }
+                )
         else:
             print("[api] text-only request: screenshot not sent")
 
@@ -276,8 +293,67 @@ class LLMClient:
 
         return self._parse_comment_batch(response.output_text or "")
 
-    def _build_api_image(self, frame: CaptureFrame) -> tuple[bytes, str]:
-        if self.image_max_dimension <= 0:
+    def _build_gemini_contents(
+        self,
+        types: object,
+        user_prompt: str,
+        frame: CaptureFrame,
+        context_frames: list[CaptureFrame],
+    ) -> list[object]:
+        contents: list[object] = [user_prompt]
+
+        if not self.send_screenshot:
+            print("[api] text-only request: screenshot not sent")
+            return contents
+
+        frames = [*context_frames, frame]
+        for index, item in enumerate(frames, start=1):
+            is_current = index == len(frames)
+            contents.append(self._frame_label(index, len(frames), item, frame))
+            image_bytes, mime_type = self._build_api_image(
+                item,
+                is_current=is_current,
+                frame_index=index,
+            )
+            contents.append(
+                types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
+            )
+
+        return contents
+
+    @staticmethod
+    def _frame_label(
+        index: int,
+        total: int,
+        frame: CaptureFrame,
+        current_frame: CaptureFrame,
+    ) -> str:
+        age_seconds = max(0.0, current_frame.timestamp - frame.timestamp)
+        role = "LATEST/CURRENT FRAME" if index == total else "historical sample"
+        return (
+            f"Frame {index} of {total}: {age_seconds:.1f} seconds before "
+            f"the latest frame ({role})."
+        )
+
+    def _build_api_image(
+        self,
+        frame: CaptureFrame,
+        *,
+        is_current: bool = True,
+        frame_index: int = 1,
+    ) -> tuple[bytes, str]:
+        max_dimension = (
+            self.image_max_dimension
+            if is_current
+            else self.history_image_max_dimension
+        )
+        configured_quality = (
+            self.image_jpeg_quality
+            if is_current
+            else self.history_image_jpeg_quality
+        )
+
+        if max_dimension <= 0:
             return frame.image_path.read_bytes(), "image/png"
 
         from PIL import Image
@@ -286,12 +362,12 @@ class LLMClient:
             original_size = image.size
             image = image.convert("RGB")
             image.thumbnail(
-                (self.image_max_dimension, self.image_max_dimension),
+                (max_dimension, max_dimension),
                 Image.Resampling.LANCZOS,
             )
 
             buffer = BytesIO()
-            jpeg_quality = max(20, min(95, int(self.image_jpeg_quality)))
+            jpeg_quality = max(20, min(95, int(configured_quality)))
             image.save(buffer, format="JPEG",
                        quality=jpeg_quality, optimize=True)
             image_bytes = buffer.getvalue()
@@ -299,8 +375,10 @@ class LLMClient:
         if self.save_api_images and self.api_image_output_dir:
             self.api_image_output_dir.mkdir(parents=True, exist_ok=True)
             safe_model_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", self.model_name)
+            frame_role = "current" if is_current else "history"
             api_image_path = self.api_image_output_dir / (
-                f"{frame.image_path.stem}_{safe_model_name}_api_"
+                f"{frame.image_path.stem}_{safe_model_name}_"
+                f"f{frame_index:02d}_{frame_role}_api_"
                 f"{image.size[0]}x{image.size[1]}.jpg"
             )
             api_image_path.write_bytes(image_bytes)
@@ -308,6 +386,7 @@ class LLMClient:
 
         print(
             "[api] resized image for request: "
+            f"frame={frame_index} role={'current' if is_current else 'history'} "
             f"{original_size[0]}x{original_size[1]} -> "
             f"{image.size[0]}x{image.size[1]} "
             f"quality={jpeg_quality} "
