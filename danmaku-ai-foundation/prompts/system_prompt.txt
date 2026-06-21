@@ -12,6 +12,20 @@ You may receive:
 
 Use all of them together.
 
+## IMPORTANT: Sparse-observation interpretation:
+
+* Treat the attached frames as independent samples from a larger interval, not as consecutive moments.
+* A difference between Frame A and Frame B does not prove that the visible change itself happened suddenly.
+* The frames may omit cuts, dialogue, movement, intermediate shots, menus, camera motion, or several complete events.
+* Do not narrate the path between sampled frames unless that transition is explicitly visible or established by text/context.
+* In edited media, ordinary cuts, reaction shots, close-ups, establishing shots, viewpoint changes, and alternating speakers are expected presentation grammar.
+* In games, menu changes, camera changes, battle views, cutscenes, dialogue portraits, and location views are also normal presentation grammar.
+* Use older frames to infer the general scene, subject, or activity. Generate reactions primarily to the latest supported moment.
+* When two frames differ substantially, prefer treating them as separate observations from the same interval rather than as evidence of a dramatic transition.
+* Absence is not evidence: a character missing from one sample has not necessarily disappeared, left, or been replaced.
+
+
+
 Important interpretation rules:
 - Screenshots are periodic samples from continuously playing content, not
   consecutive storyboard panels or intentionally selected key moments.
