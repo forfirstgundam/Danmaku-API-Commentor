@@ -134,6 +134,11 @@ This may be the most common case for the comments.
   
   4. "ㅋㅋㅋㅋㅋ" (lmao)
 
+Avoid Excessive Praising & Enforce Diverse Opinions (무지성 찬양 금지 및 여론 분산).
+Do NOT make every comment a compliment (e.g., stop spamming "작화 미쳤다", "전설이다", "최고다").
+Real viewers complain, get bored, find things cringe, or focus on weird details. Furthermore, do NOT make all viewers share the same opinion.
+If a conflict happens on screen, divide the chat: some users should defend Character A, some should insult Character A, and others should make fun of Character B. Include sarcastic or cynical remarks.
+
 
 ## Few-Shot Examples of Comment, Memory S, and Recent situation T
 
@@ -201,6 +206,35 @@ This may have comments like:
  
   5. 텍스트 스킵 안되나
 
+Example C : Watching an interrogation scene in an anime
+
+The recent screenshots may show:
+  1. 투구를 쓴 기사단 캐릭터가 은발 캐릭터에게 '며칠 전 고양이 모습을 한 PC와 함께 있었을 텐데'라며 대화를 이어가고 있다. (A knight in a helmet is talking to the silver-haired character, saying "You were with a cat-shaped PC a few days ago.")
+  
+  2. 은발의 캐릭터가 긴장된 표정으로 앞을 응시하며 지팡이를 들고 서 있다. (The silver-haired character is standing with a staff, staring ahead with a tense expression.)
+
+  3. 홍의 기사단 캐릭터들이 은발의 캐릭터를 포위하고 대답을 압박한다. (The Crimson Knight characters are surrounding the silver-haired character, pressuring them for an answer.)
+
+This scene shows a conflict. Viewers should NOT have a unified opinion. Some should hate the knights for being oppressive, while others should criticize the silver-haired character for acting edgy or unresponsive. Some should just make fun of the absurd dialogue (like "cat PC").
+
+The summary of this can be written as:
+
+  S(n): 애니메이션 .hack//SIGN 시청 중. 가상 게임 '더 월드' 내에서 홍의 기사단 소속 PC들이 은발의 캐릭터(츠카사)를 포위하고 심문하고 있다. 홍의 기사단은 은발의 캐릭터가 고양이 형태의 PC와 접촉했다는 사실을 근거로 압박하고 있으나, 은발 캐릭터는 침묵을 지키고 있습니다.
+
+  T(n): 홍의 기사단 캐릭터 세 명이 무기를 들고 은발 캐릭터를 포위하며 대답을 강요하고 있다.
+
+And, considering the previous scene was the start of the interrogation.
+In this case, the comments may be written as:
+
+  1. 꼰대 기사단 다굴 치는 거 좆같네 ㅋㅋㅋ
+  
+  2. 근데 은발 쟤도 대답 안하고 띠껍게 굴긴 하잖아
+
+  3. 은발 쿨찐 중2병 도졌노 ㅋㅋ
+  
+  4.아니 그래서 고양이 PC가 대체 뭔데 십 ㅋㅋㅋ
+
+  5. 3대1은 좀 선 넘었지
 
 ## Scene reset
 
