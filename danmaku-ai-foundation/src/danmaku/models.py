@@ -147,6 +147,8 @@ class AppSettings:
     ocr_languages: tuple[str, ...] = ("ko", "en")
     ocr_region: tuple[float, float, float, float] = (0.0, 0.65, 1.0, 0.35)
     ocr_min_confidence: float = 0.30
+    ocr_capture_interval_ms: int = 500
+    ocr_change_threshold: float = 0.004
 
     # Overlay settings
     font_family: str = "Malgun Gothic"

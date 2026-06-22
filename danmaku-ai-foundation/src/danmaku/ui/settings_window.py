@@ -527,7 +527,7 @@ class SettingsWindow(QWidget):
         )
         image_group.setLayout(image_form)
 
-        ocr_group = QGroupBox("Local OCR")
+        ocr_group = QGroupBox("Real-time Local OCR")
         ocr_form = self._new_form()
 
         self.ocr_enabled_checkbox = QCheckBox("Enable local OCR")
@@ -550,6 +550,14 @@ class SettingsWindow(QWidget):
             self.settings.ocr_min_confidence
         )
 
+        self.ocr_interval_input = QSpinBox()
+        self.ocr_interval_input.setRange(250, 3000)
+        self.ocr_interval_input.setSingleStep(50)
+        self.ocr_interval_input.setSuffix(" ms")
+        self.ocr_interval_input.setValue(
+            self.settings.ocr_capture_interval_ms
+        )
+
         self.ocr_region_button = QPushButton("Select OCR area")
         self.ocr_region_button.setObjectName("RefreshButton")
         self.ocr_region_button.clicked.connect(self._select_ocr_region)
@@ -564,6 +572,7 @@ class SettingsWindow(QWidget):
 
         ocr_form.addRow("", self.ocr_enabled_checkbox)
         ocr_form.addRow("Language", self.ocr_language_input)
+        ocr_form.addRow("Scan interval", self.ocr_interval_input)
         ocr_form.addRow("Minimum confidence", self.ocr_confidence_input)
         ocr_form.addRow("", self.ocr_region_button)
         ocr_form.addRow("Selected area", self.ocr_region_label)
@@ -817,6 +826,9 @@ class SettingsWindow(QWidget):
         self.settings.ocr_region = self._ocr_region
         self.settings.ocr_min_confidence = (
             self.ocr_confidence_input.value()
+        )
+        self.settings.ocr_capture_interval_ms = (
+            self.ocr_interval_input.value()
         )
 
         self.settings.font_family = (

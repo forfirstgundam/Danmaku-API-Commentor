@@ -69,7 +69,6 @@ class EasyOcrService:
         min_confidence: float,
     ) -> tuple[str, float]:
         try:
-            import numpy as np
             from PIL import Image
         except ImportError as exc:
             raise OcrUnavailableError(
@@ -78,18 +77,31 @@ class EasyOcrService:
 
         with Image.open(image_path) as source:
             image = source.convert("RGB")
-            left, top, right, bottom = normalized_region_to_box(
-                region,
-                image.width,
-                image.height,
-            )
-            crop = image.crop((left, top, right, bottom))
-            # OCR detection cost grows sharply with large captures. The API
-            # screenshots can remain high-resolution; only the OCR crop needs
-            # this bounded working size.
-            if max(crop.size) > 1280:
-                crop.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
-            pixels = np.asarray(crop)
+            crop = crop_normalized_region(image, region)
+
+        return self.recognize_image(crop, min_confidence)
+
+    def recognize_image(
+        self,
+        image,
+        min_confidence: float,
+    ) -> tuple[str, float]:
+        """Recognize an already-cropped in-memory PIL image."""
+        try:
+            import numpy as np
+            from PIL import Image
+        except ImportError as exc:
+            raise OcrUnavailableError(
+                "OCR dependencies are unavailable. Run: pip install -r requirements.txt"
+            ) from exc
+
+        crop = image.convert("RGB")
+        # OCR detection cost grows sharply with large captures. The API
+        # screenshots can remain high-resolution; only the OCR crop needs
+        # this bounded working size.
+        if max(crop.size) > 1280:
+            crop.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+        pixels = np.asarray(crop)
 
         with self._lock:
             results = self._get_reader().readtext(
@@ -207,6 +219,37 @@ def normalized_region_to_box(
         max(top + 1, round((y + height) * image_height)),
     )
     return left, top, right, bottom
+
+
+def crop_normalized_region(
+    image,
+    region: tuple[float, float, float, float],
+):
+    left, top, right, bottom = normalized_region_to_box(
+        region,
+        image.width,
+        image.height,
+    )
+    return image.crop((left, top, right, bottom))
+
+
+def make_visual_signature(image, width: int = 64, height: int = 32) -> bytes:
+    """Create a tiny grayscale signature for inexpensive change detection."""
+    from PIL import Image
+
+    return image.convert("L").resize(
+        (width, height),
+        Image.Resampling.BILINEAR,
+    ).tobytes()
+
+
+def visual_signature_difference(previous: bytes, current: bytes) -> float:
+    if not previous or len(previous) != len(current):
+        return 1.0
+    return sum(
+        abs(before - after)
+        for before, after in zip(previous, current)
+    ) / (len(current) * 255.0)
 
 
 def clean_ocr_text(text: str) -> str:

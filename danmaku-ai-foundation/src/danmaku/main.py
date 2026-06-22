@@ -11,7 +11,7 @@ from datetime import datetime
 # EasyOCR imports torch later, so preload it here.
 try:
     import torch  # noqa: F401
-except ImportError:
+except Exception:
     # OCR remains an optional dependency.
     torch = None
 
@@ -32,6 +32,9 @@ from danmaku.ocr import (
     OcrObservation,
     OcrUnavailableError,
     RollingOcrBuffer,
+    crop_normalized_region,
+    make_visual_signature,
+    visual_signature_difference,
 )
 from danmaku.overlay.overlay_window import OverlayWindow
 from danmaku.ui.settings_window import SettingsWindow
@@ -93,9 +96,12 @@ class DanmakuApp:
         self.ocr_service: EasyOcrService | None = None
         self.prepared_ocr_service: EasyOcrService | None = None
         self.ocr_busy = False
-        self.pending_ocr_frame: CaptureFrame | None = None
         self.ocr_disabled_for_run = False
         self.ocr_generation = 0
+        self.last_ocr_signature = b""
+        self.ocr_scan_count = 0
+        self.ocr_skipped_unchanged_count = 0
+        self.ocr_consecutive_errors = 0
 
         self.signals = AppSignals()
         self.signals.frame_sampled.connect(self._on_frame_sampled)
@@ -138,6 +144,11 @@ class DanmakuApp:
         self.sample_timer = QTimer()
         self.sample_timer.timeout.connect(self._trigger_sample_capture)
 
+        self.ocr_capture_timer = QTimer()
+        self.ocr_capture_timer.timeout.connect(
+            self._trigger_ocr_capture
+        )
+
     def show(self) -> None:
         self.settings_window.show()
 
@@ -166,8 +177,11 @@ class DanmakuApp:
         self.ocr_buffer.clear()
         self.ocr_generation += 1
         self.ocr_busy = False
-        self.pending_ocr_frame = None
         self.ocr_disabled_for_run = False
+        self.last_ocr_signature = b""
+        self.ocr_scan_count = 0
+        self.ocr_skipped_unchanged_count = 0
+        self.ocr_consecutive_errors = 0
         if self.settings.ocr_enabled:
             if (
                 self.prepared_ocr_service is not None
@@ -260,11 +274,12 @@ class DanmakuApp:
             f"{self.settings.ocr_enabled}, "
             f"languages={self.settings.ocr_languages}, "
             f"region={self.settings.ocr_region}, "
+            f"interval={self.settings.ocr_capture_interval_ms}ms, "
             f"min_confidence={self.settings.ocr_min_confidence}"
         )
         if self.settings.ocr_enabled:
             self.settings_window.set_ocr_status(
-                "OCR enabled; waiting for the first sampled frame."
+                "OCR enabled; waiting for the first real-time scan."
             )
 
         interval_ms = self.settings.capture_interval_seconds * 1000
@@ -276,6 +291,9 @@ class DanmakuApp:
             else self.settings.capture_interval_seconds
         )
         self.sample_timer.setInterval(max(1, sample_interval_seconds) * 1000)
+        self.ocr_capture_timer.setInterval(
+            max(250, self.settings.ocr_capture_interval_ms)
+        )
 
         self.overlay.show()
         self.is_running = True
@@ -297,11 +315,11 @@ class DanmakuApp:
     def stop(self) -> None:
         self.capture_timer.stop()
         self.sample_timer.stop()
+        self.ocr_capture_timer.stop()
         self.overlay.hide()
         self.is_running = False
         self.ocr_generation += 1
         self.ocr_busy = False
-        self.pending_ocr_frame = None
         self.settings_window.set_running(False)
         print("[app] stopped")
 
@@ -476,6 +494,9 @@ class DanmakuApp:
 
         self._trigger_sample_capture()
         self.sample_timer.start()
+        if self.settings.ocr_enabled and self.ocr_service is not None:
+            self._trigger_ocr_capture()
+            self.ocr_capture_timer.start()
 
     def _sample_capture_worker(self) -> None:
         try:
@@ -507,7 +528,6 @@ class DanmakuApp:
         self.frame_buffer.append(frame)
         buffer_size = max(1, self.settings.frame_buffer_size)
         self.frame_buffer = self.frame_buffer[-buffer_size:]
-        self._queue_ocr(frame)
 
         image_size_kb = round(frame.image_path.stat().st_size / 1024, 1)
         print(
@@ -525,48 +545,90 @@ class DanmakuApp:
         self.is_sampling = False
         print(f"[capture] sample failed: {message}")
 
-    def _queue_ocr(self, frame: CaptureFrame) -> None:
+    def _trigger_ocr_capture(self) -> None:
         if (
             not self.is_running
             or not self.settings.ocr_enabled
             or self.ocr_service is None
             or self.ocr_disabled_for_run
+            or self.ocr_busy
         ):
             return
 
-        # Keep at most one waiting frame. If OCR is slower than the sampler,
-        # the newest sample replaces obsolete queued work.
-        if self.ocr_busy:
-            self.pending_ocr_frame = frame
-            return
-
+        # There is deliberately no pending queue. If recognition is slower
+        # than the scan interval, timer ticks are dropped and the next scan
+        # captures the newest available pixels.
         self.ocr_busy = True
         thread = threading.Thread(
-            target=self._ocr_worker,
-            args=(frame, self.ocr_generation),
+            target=self._ocr_capture_worker,
+            args=(self.ocr_generation,),
             daemon=True,
         )
         thread.start()
 
-    def _ocr_worker(self, frame: CaptureFrame, generation: int) -> None:
+    def _ocr_capture_worker(self, generation: int) -> None:
         started = time.perf_counter()
         try:
             if self.ocr_service is None:
                 return
-            text, confidence = self.ocr_service.recognize(
-                frame.image_path,
+
+            capture_started = time.perf_counter()
+            with self.capture_lock:
+                image = self.capture_service.grab_image()
+            captured_at = time.time()
+            capture_duration = round(
+                time.perf_counter() - capture_started,
+                3,
+            )
+            crop = crop_normalized_region(
+                image,
                 self.settings.ocr_region,
+            )
+            signature = make_visual_signature(crop)
+            visual_difference = visual_signature_difference(
+                self.last_ocr_signature,
+                signature,
+            )
+
+            if (
+                self.last_ocr_signature
+                and visual_difference
+                < self.settings.ocr_change_threshold
+            ):
+                self.signals.ocr_ready.emit(
+                    {
+                        "text": "",
+                        "confidence": 0.0,
+                        "timestamp": captured_at,
+                        "duration_sec": round(
+                            time.perf_counter() - started,
+                            3,
+                        ),
+                        "capture_duration_sec": capture_duration,
+                        "visual_difference": visual_difference,
+                        "skipped_unchanged": True,
+                        "generation": generation,
+                    }
+                )
+                return
+
+            text, confidence = self.ocr_service.recognize_image(
+                crop,
                 self.settings.ocr_min_confidence,
             )
             self.signals.ocr_ready.emit(
                 {
-                    "frame": frame,
                     "text": text,
                     "confidence": confidence,
+                    "timestamp": captured_at,
                     "duration_sec": round(
                         time.perf_counter() - started,
                         3,
                     ),
+                    "capture_duration_sec": capture_duration,
+                    "visual_difference": visual_difference,
+                    "signature": signature,
+                    "skipped_unchanged": False,
                     "generation": generation,
                 }
             )
@@ -584,15 +646,25 @@ class DanmakuApp:
         if data.get("generation") != self.ocr_generation:
             return
         self.ocr_busy = False
-        frame = data.get("frame")
+        self.ocr_consecutive_errors = 0
+        self.ocr_scan_count += 1
+
+        if data.get("skipped_unchanged"):
+            self.ocr_skipped_unchanged_count += 1
+            return
+
+        signature = data.get("signature")
+        if isinstance(signature, bytes):
+            self.last_ocr_signature = signature
+
         text = data.get("text", "")
         confidence = data.get("confidence", 0.0)
+        timestamp = data.get("timestamp", time.time())
 
-        if isinstance(frame, CaptureFrame) and isinstance(text, str) and text:
-            frame.ocr_text = text
+        if isinstance(text, str) and text:
             added = self.ocr_buffer.add(
                 OcrObservation(
-                    timestamp=frame.timestamp,
+                    timestamp=float(timestamp),
                     text=text,
                     confidence=float(confidence or 0.0),
                 )
@@ -601,34 +673,28 @@ class DanmakuApp:
                 "[ocr] recognized "
                 f"confidence={float(confidence or 0.0):.2f}, "
                 f"duration={data.get('duration_sec')}s, "
+                f"capture={data.get('capture_duration_sec')}s, "
+                f"change={float(data.get('visual_difference', 0.0)):.3f}, "
                 f"new={added}: {text}"
             )
             self.settings_window.set_ocr_status(
                 f"Last OCR: {text[:120]}"
             )
 
-        pending = self.pending_ocr_frame
-        self.pending_ocr_frame = None
-        if self.is_running and pending is not None:
-            self._queue_ocr(pending)
-
     def _on_ocr_error(self, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
         if data.get("generation") != self.ocr_generation:
             return
         self.ocr_busy = False
+        self.ocr_consecutive_errors += 1
         message = str(data.get("message", "Unknown OCR error"))
         fatal = bool(data.get("fatal", False))
-        if fatal:
+        if fatal or self.ocr_consecutive_errors >= 5:
             self.ocr_disabled_for_run = True
-            self.pending_ocr_frame = None
-        print(f"[ocr] failed: {message}")
+            self.ocr_capture_timer.stop()
+        if self.ocr_consecutive_errors in {1, 5} or fatal:
+            print(f"[ocr] failed: {message}")
         self.settings_window.set_ocr_status(f"OCR error: {message}")
-
-        pending = self.pending_ocr_frame
-        self.pending_ocr_frame = None
-        if self.is_running and not fatal and pending is not None:
-            self._queue_ocr(pending)
 
     def _select_historical_frames_for_request(self) -> list[CaptureFrame]:
         frame_buffer = list(self.frame_buffer)
@@ -902,6 +968,10 @@ class DanmakuApp:
                 "fallback_error_message": fallback_error_message,
                 "ocr_enabled": self.settings.ocr_enabled,
                 "ocr_observation_count": len(ocr_observations),
+                "ocr_scan_count": self.ocr_scan_count,
+                "ocr_skipped_unchanged_count": (
+                    self.ocr_skipped_unchanged_count
+                ),
             }
 
             print(
@@ -1339,6 +1409,10 @@ class DanmakuApp:
             "ocr_languages": list(self.settings.ocr_languages),
             "ocr_region": list(self.settings.ocr_region),
             "ocr_min_confidence": self.settings.ocr_min_confidence,
+            "ocr_capture_interval_ms": (
+                self.settings.ocr_capture_interval_ms
+            ),
+            "ocr_change_threshold": self.settings.ocr_change_threshold,
             "timing": metrics or {},
         }
 

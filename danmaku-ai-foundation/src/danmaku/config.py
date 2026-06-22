@@ -85,4 +85,7 @@ def load_settings_from_env() -> AppSettings:
             "1", "true", "yes", "y"} or not api_key,
         ocr_enabled=use_ocr_raw in {"1", "true", "yes", "y"},
         ocr_languages=ocr_languages or ("ko", "en"),
+        ocr_capture_interval_ms=int(
+            os.getenv("DANMAKU_OCR_INTERVAL_MS", "500")
+        ),
     )
