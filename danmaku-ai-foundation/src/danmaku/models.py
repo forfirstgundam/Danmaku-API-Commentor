@@ -143,24 +143,24 @@ class AppSettings:
 
     # Overlay settings
     font_family: str = "Malgun Gothic"
-    font_size: int = 20
+    font_size: int = 25
 
     # Vertical space for comments.
     overlay_top_ratio: float = 0.03
-    overlay_bottom_ratio: float = 0.36
+    overlay_bottom_ratio: float = 0.30
 
     # Lane settings.
-    lane_height_px: int = 25
-    lane_vertical_padding_px: int = 5
-    min_comment_gap_px: int = 160
+    lane_height_px: int = 30
+    lane_vertical_padding_px: int = 10
+    min_comment_gap_px: int = 140
 
     max_simultaneous_comments: int = 15
     max_pending_comments: int = 60
 
     animation_interval_ms: int = 33
-    comment_spawn_min_interval_ms: int = 500
+    comment_spawn_min_interval_ms: int = 1500
     comment_spawn_max_interval_ms: int = 4000
-    comment_speed_px_per_tick: float = 12.0
+    comment_speed_px_per_tick: float = 18.0
 
     clear_active_comments_on_new_batch: bool = False
 
