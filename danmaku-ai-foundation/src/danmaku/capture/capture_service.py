@@ -19,12 +19,16 @@ class CaptureService:
     def __init__(
         self,
         output_dir: Path,
+        capture_mode: str = "full_screen",
+        capture_region: tuple[int, int, int, int] = (0, 0, 0, 0),
         target_window_title: str = "",
         target_window_handle: int = 0,
         image_format: str = "PNG",
         jpeg_quality: int = 82,
     ) -> None:
         self.output_dir = output_dir
+        self.capture_mode = capture_mode
+        self.capture_region = capture_region
         self.target_window_title = target_window_title
         self.target_window_handle = int(target_window_handle or 0)
         self.image_format = image_format.upper()
@@ -38,7 +42,9 @@ class CaptureService:
     def capture(self) -> CaptureFrame:
         image_path = self._make_capture_path()
 
-        if self.target_window_handle or self.target_window_title:
+        if self.capture_mode == "region":
+            self._capture_region(image_path, self.capture_region)
+        elif self.target_window_handle or self.target_window_title:
             self._capture_window(image_path)
         else:
             self._capture_full_screen(image_path)
@@ -53,7 +59,9 @@ class CaptureService:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         safe_target = "fullscreen"
 
-        if self.target_window_title:
+        if self.capture_mode == "region":
+            safe_target = "region"
+        elif self.target_window_title:
             safe_target = "".join(
                 char if char.isalnum() or char in ("-", "_") else "_"
                 for char in self.target_window_title[:40]
@@ -96,6 +104,35 @@ class CaptureService:
             return
         except Exception as exc:
             raise RuntimeError(f"Full-screen capture failed: {exc}") from exc
+
+    def _capture_region(
+        self,
+        output_path: Path,
+        region: tuple[int, int, int, int],
+    ) -> None:
+        try:
+            import mss
+            from PIL import Image
+
+            left, top, width, height = region
+            if width <= 0 or height <= 0:
+                raise RuntimeError("Invalid capture region size")
+
+            region_box = {
+                "left": left,
+                "top": top,
+                "width": width,
+                "height": height,
+            }
+
+            with mss.mss() as sct:
+                screenshot = sct.grab(region_box)
+                image = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
+                self._save_image(image, output_path)
+                return
+
+        except Exception as exc:
+            raise RuntimeError(f"Region capture failed: {exc}") from exc
 
     def _capture_window(self, output_path: Path) -> None:
         """

@@ -88,6 +88,8 @@ class DanmakuApp:
             output_dir=self.settings.capture_output_dir,
             target_window_title=self.settings.target_window_title,
             target_window_handle=self.settings.target_window_handle,
+            capture_mode=self.settings.capture_mode,
+            capture_region=self.settings.capture_region,
             image_format="JPEG",
             jpeg_quality=self.settings.sample_capture_jpeg_quality,
         )
@@ -146,6 +148,8 @@ class DanmakuApp:
             output_dir=self.settings.capture_output_dir,
             target_window_title=self.settings.target_window_title,
             target_window_handle=self.settings.target_window_handle,
+            capture_mode=self.settings.capture_mode,
+            capture_region=self.settings.capture_region,
             image_format="JPEG",
             jpeg_quality=self.settings.sample_capture_jpeg_quality,
         )
