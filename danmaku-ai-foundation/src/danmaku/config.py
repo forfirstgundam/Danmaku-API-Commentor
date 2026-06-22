@@ -48,6 +48,13 @@ def load_settings_from_env() -> AppSettings:
         "DANMAKU_USE_STREAMING_API", "true").strip().lower()
     use_multi_frame_raw = os.getenv(
         "DANMAKU_USE_MULTI_FRAME", "true").strip().lower()
+    use_ocr_raw = os.getenv(
+        "DANMAKU_USE_OCR", "false").strip().lower()
+    ocr_languages = tuple(
+        item.strip()
+        for item in os.getenv("DANMAKU_OCR_LANGUAGES", "ko,en").split(",")
+        if item.strip()
+    )
 
     return AppSettings(
         capture_interval_seconds=int(
@@ -76,4 +83,6 @@ def load_settings_from_env() -> AppSettings:
         save_api_images=save_api_images_raw in {"1", "true", "yes", "y"},
         use_dummy_api=use_dummy_raw in {
             "1", "true", "yes", "y"} or not api_key,
+        ocr_enabled=use_ocr_raw in {"1", "true", "yes", "y"},
+        ocr_languages=ocr_languages or ("ko", "en"),
     )

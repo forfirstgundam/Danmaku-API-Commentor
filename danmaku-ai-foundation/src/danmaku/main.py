@@ -19,6 +19,12 @@ from danmaku.models import (
     CommentBatch,
     SessionProfile,
 )
+from danmaku.ocr import (
+    EasyOcrService,
+    OcrObservation,
+    OcrUnavailableError,
+    RollingOcrBuffer,
+)
 from danmaku.overlay.overlay_window import OverlayWindow
 from danmaku.ui.settings_window import SettingsWindow
 
@@ -29,6 +35,8 @@ class AppSignals(QObject):
     partial_comment_ready = pyqtSignal(object)
     comments_ready = pyqtSignal(object)
     session_profile_ready = pyqtSignal(object)
+    ocr_ready = pyqtSignal(object)
+    ocr_error = pyqtSignal(object)
     error = pyqtSignal(str)
 
 
@@ -73,6 +81,13 @@ class DanmakuApp:
         self.capture_lock = threading.Lock()
         self.waiting_for_first_request = False
         self.frame_buffer: list[CaptureFrame] = []
+        self.ocr_buffer = RollingOcrBuffer()
+        self.ocr_service: EasyOcrService | None = None
+        self.prepared_ocr_service: EasyOcrService | None = None
+        self.ocr_busy = False
+        self.pending_ocr_frame: CaptureFrame | None = None
+        self.ocr_disabled_for_run = False
+        self.ocr_generation = 0
 
         self.signals = AppSignals()
         self.signals.frame_sampled.connect(self._on_frame_sampled)
@@ -82,6 +97,8 @@ class DanmakuApp:
         self.signals.session_profile_ready.connect(
             self._on_session_profile_ready
         )
+        self.signals.ocr_ready.connect(self._on_ocr_ready)
+        self.signals.ocr_error.connect(self._on_ocr_error)
         self.signals.error.connect(self._on_error)
 
         self.capture_service = CaptureService(
@@ -102,6 +119,9 @@ class DanmakuApp:
         self.settings_window.stop_requested.connect(self.stop)
         self.settings_window.session_profile_updated.connect(
             self._on_manual_session_profile_updated
+        )
+        self.settings_window.ocr_service_prepared.connect(
+            self._on_ocr_service_prepared
         )
 
         self.capture_timer = QTimer()
@@ -135,6 +155,24 @@ class DanmakuApp:
         self.streamed_comments_current_batch = []
         self.frame_buffer = []
         self.is_sampling = False
+        self.ocr_buffer.clear()
+        self.ocr_generation += 1
+        self.ocr_busy = False
+        self.pending_ocr_frame = None
+        self.ocr_disabled_for_run = False
+        if self.settings.ocr_enabled:
+            if (
+                self.prepared_ocr_service is not None
+                and self.prepared_ocr_service.languages
+                == self.settings.ocr_languages
+            ):
+                self.ocr_service = self.prepared_ocr_service
+            else:
+                self.ocr_service = EasyOcrService(
+                    self.settings.ocr_languages
+                )
+        else:
+            self.ocr_service = None
         # Single-frame mode preserves the old quick first request. Multi-frame
         # mode waits for the normal API interval so its first buffer can fill.
         self.waiting_for_first_request = not self.settings.use_multi_frame_context
@@ -209,6 +247,17 @@ class DanmakuApp:
             f"{self.settings.target_window_title or 'Full screen'}, "
             f"handle={self.settings.target_window_handle or '(none)'}"
         )
+        print(
+            "[app] ocr="
+            f"{self.settings.ocr_enabled}, "
+            f"languages={self.settings.ocr_languages}, "
+            f"region={self.settings.ocr_region}, "
+            f"min_confidence={self.settings.ocr_min_confidence}"
+        )
+        if self.settings.ocr_enabled:
+            self.settings_window.set_ocr_status(
+                "OCR enabled; waiting for the first sampled frame."
+            )
 
         interval_ms = self.settings.capture_interval_seconds * 1000
         self.capture_timer.start(interval_ms)
@@ -242,6 +291,9 @@ class DanmakuApp:
         self.sample_timer.stop()
         self.overlay.hide()
         self.is_running = False
+        self.ocr_generation += 1
+        self.ocr_busy = False
+        self.pending_ocr_frame = None
         self.settings_window.set_running(False)
         print("[app] stopped")
 
@@ -358,6 +410,14 @@ class DanmakuApp:
             self._save_session_context()
         print("[profile] using user-edited session profile")
 
+    def _on_ocr_service_prepared(self, payload: object) -> None:
+        if isinstance(payload, EasyOcrService):
+            self.prepared_ocr_service = payload
+            print(
+                "[ocr] model prepared before start: "
+                f"languages={payload.languages}"
+            )
+
     def _build_context_summary(self) -> str:
         """
         Build context sent to the LLM.
@@ -439,6 +499,7 @@ class DanmakuApp:
         self.frame_buffer.append(frame)
         buffer_size = max(1, self.settings.frame_buffer_size)
         self.frame_buffer = self.frame_buffer[-buffer_size:]
+        self._queue_ocr(frame)
 
         image_size_kb = round(frame.image_path.stat().st_size / 1024, 1)
         print(
@@ -456,8 +517,114 @@ class DanmakuApp:
         self.is_sampling = False
         print(f"[capture] sample failed: {message}")
 
+    def _queue_ocr(self, frame: CaptureFrame) -> None:
+        if (
+            not self.is_running
+            or not self.settings.ocr_enabled
+            or self.ocr_service is None
+            or self.ocr_disabled_for_run
+        ):
+            return
+
+        # Keep at most one waiting frame. If OCR is slower than the sampler,
+        # the newest sample replaces obsolete queued work.
+        if self.ocr_busy:
+            self.pending_ocr_frame = frame
+            return
+
+        self.ocr_busy = True
+        thread = threading.Thread(
+            target=self._ocr_worker,
+            args=(frame, self.ocr_generation),
+            daemon=True,
+        )
+        thread.start()
+
+    def _ocr_worker(self, frame: CaptureFrame, generation: int) -> None:
+        started = time.perf_counter()
+        try:
+            if self.ocr_service is None:
+                return
+            text, confidence = self.ocr_service.recognize(
+                frame.image_path,
+                self.settings.ocr_region,
+                self.settings.ocr_min_confidence,
+            )
+            self.signals.ocr_ready.emit(
+                {
+                    "frame": frame,
+                    "text": text,
+                    "confidence": confidence,
+                    "duration_sec": round(
+                        time.perf_counter() - started,
+                        3,
+                    ),
+                    "generation": generation,
+                }
+            )
+        except Exception as exc:
+            self.signals.ocr_error.emit(
+                {
+                    "message": str(exc),
+                    "fatal": isinstance(exc, OcrUnavailableError),
+                    "generation": generation,
+                }
+            )
+
+    def _on_ocr_ready(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        if data.get("generation") != self.ocr_generation:
+            return
+        self.ocr_busy = False
+        frame = data.get("frame")
+        text = data.get("text", "")
+        confidence = data.get("confidence", 0.0)
+
+        if isinstance(frame, CaptureFrame) and isinstance(text, str) and text:
+            frame.ocr_text = text
+            added = self.ocr_buffer.add(
+                OcrObservation(
+                    timestamp=frame.timestamp,
+                    text=text,
+                    confidence=float(confidence or 0.0),
+                )
+            )
+            print(
+                "[ocr] recognized "
+                f"confidence={float(confidence or 0.0):.2f}, "
+                f"duration={data.get('duration_sec')}s, "
+                f"new={added}: {text}"
+            )
+            self.settings_window.set_ocr_status(
+                f"Last OCR: {text[:120]}"
+            )
+
+        pending = self.pending_ocr_frame
+        self.pending_ocr_frame = None
+        if self.is_running and pending is not None:
+            self._queue_ocr(pending)
+
+    def _on_ocr_error(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        if data.get("generation") != self.ocr_generation:
+            return
+        self.ocr_busy = False
+        message = str(data.get("message", "Unknown OCR error"))
+        fatal = bool(data.get("fatal", False))
+        if fatal:
+            self.ocr_disabled_for_run = True
+            self.pending_ocr_frame = None
+        print(f"[ocr] failed: {message}")
+        self.settings_window.set_ocr_status(f"OCR error: {message}")
+
+        pending = self.pending_ocr_frame
+        self.pending_ocr_frame = None
+        if self.is_running and not fatal and pending is not None:
+            self._queue_ocr(pending)
+
     def _select_historical_frames_for_request(self) -> list[CaptureFrame]:
-        if not self.settings.use_multi_frame_context or not self.frame_buffer:
+        frame_buffer = list(self.frame_buffer)
+        if not self.settings.use_multi_frame_context or not frame_buffer:
             return []
 
         # Reserve one slot for a fresh capture performed immediately before
@@ -465,20 +632,20 @@ class DanmakuApp:
         requested_count = max(0, self.settings.frames_per_request - 1)
         if requested_count == 0:
             return []
-        frame_count = min(requested_count, len(self.frame_buffer))
+        frame_count = min(requested_count, len(frame_buffer))
 
-        if frame_count == len(self.frame_buffer):
-            return list(self.frame_buffer)
+        if frame_count == len(frame_buffer):
+            return frame_buffer
 
         if frame_count == 1:
-            return [self.frame_buffer[-1]]
+            return [frame_buffer[-1]]
 
-        last_index = len(self.frame_buffer) - 1
+        last_index = len(frame_buffer) - 1
         indices = [
             round(step * last_index / (frame_count - 1))
             for step in range(frame_count)
         ]
-        return [self.frame_buffer[index] for index in indices]
+        return [frame_buffer[index] for index in indices]
 
     def _trigger_capture_and_api(self) -> None:
         if not self.is_running or self.is_busy:
@@ -490,22 +657,17 @@ class DanmakuApp:
             QTimer.singleShot(100, self._trigger_capture_and_api)
             return
 
-        historical_frames = self._select_historical_frames_for_request()
         self.is_busy = True
         self.stream_batch_started = False
         self.streamed_comments_current_batch = []
 
         thread = threading.Thread(
             target=self._capture_and_generate_worker,
-            args=(historical_frames,),
             daemon=True,
         )
         thread.start()
 
-    def _capture_and_generate_worker(
-        self,
-        historical_frames: list[CaptureFrame],
-    ) -> None:
+    def _capture_and_generate_worker(self) -> None:
         try:
             worker_started = time.perf_counter()
 
@@ -514,6 +676,10 @@ class DanmakuApp:
                 profile_interpretation_error,
             ) = self._ensure_session_profile()
 
+            # Profile interpretation can be slow on the first request. Pick
+            # historical frames only after it finishes so they still describe
+            # the seconds immediately before the fresh/current capture.
+            historical_frames = self._select_historical_frames_for_request()
             capture_started = time.perf_counter()
             with self.capture_lock:
                 frame = self.capture_service.capture()
@@ -523,6 +689,10 @@ class DanmakuApp:
             )
             frames = [*historical_frames, frame]
             context_frames = historical_frames
+            ocr_text, ocr_observations = self.ocr_buffer.drain(
+                frame.timestamp
+            )
+            frame.ocr_text = ocr_text or None
 
             frame_span_sec = round(
                 frame.timestamp - frames[0].timestamp,
@@ -722,6 +892,8 @@ class DanmakuApp:
                 ),
                 "fallback_duration_sec": fallback_duration_sec,
                 "fallback_error_message": fallback_error_message,
+                "ocr_enabled": self.settings.ocr_enabled,
+                "ocr_observation_count": len(ocr_observations),
             }
 
             print(
@@ -748,6 +920,7 @@ class DanmakuApp:
                     "recent_comments_sent": recent_comments_for_api,
                     "streamed_comment_count": streamed_comment_count,
                     "user_prompt_sent": self.llm_client.last_user_prompt,
+                    "ocr_observations": ocr_observations,
                 }
             )
 
@@ -772,6 +945,7 @@ class DanmakuApp:
         recent_comments_sent = data.get("recent_comments_sent", [])
         streamed_comment_count = data.get("streamed_comment_count", 0)
         user_prompt_sent = data.get("user_prompt_sent", "")
+        ocr_observations = data.get("ocr_observations", [])
 
         if not isinstance(frame, CaptureFrame):
             print("[app] invalid frame payload")
@@ -815,6 +989,11 @@ class DanmakuApp:
                         user_prompt_sent
                         if isinstance(user_prompt_sent, str)
                         else ""
+                    ),
+                    ocr_observations=(
+                        ocr_observations
+                        if isinstance(ocr_observations, list)
+                        else []
                     ),
                 )
 
@@ -904,6 +1083,11 @@ class DanmakuApp:
                     user_prompt_sent
                     if isinstance(user_prompt_sent, str)
                     else ""
+                ),
+                ocr_observations=(
+                    ocr_observations
+                    if isinstance(ocr_observations, list)
+                    else []
                 ),
             )
 
@@ -1053,6 +1237,7 @@ class DanmakuApp:
         recent_comments_sent: list[str] | None = None,
         frames_sent: list[CaptureFrame] | None = None,
         user_prompt_sent: str = "",
+        ocr_observations: list[dict[str, object]] | None = None,
     ) -> None:
         self.settings.comment_log_path.parent.mkdir(
             parents=True,
@@ -1065,6 +1250,7 @@ class DanmakuApp:
             "capture_timestamp": frame.timestamp,
             "image_path": str(frame.image_path),
             "ocr_text": frame.ocr_text,
+            "ocr_observations": ocr_observations or [],
             "comments": batch.comments,
             "long_comments": batch.long_comments,
 
@@ -1141,6 +1327,10 @@ class DanmakuApp:
             "api_max_output_tokens": self.settings.api_max_output_tokens,
             "use_streaming_api": self.settings.use_streaming_api,
             "save_api_images": self.settings.save_api_images,
+            "ocr_enabled": self.settings.ocr_enabled,
+            "ocr_languages": list(self.settings.ocr_languages),
+            "ocr_region": list(self.settings.ocr_region),
+            "ocr_min_confidence": self.settings.ocr_min_confidence,
             "timing": metrics or {},
         }
 

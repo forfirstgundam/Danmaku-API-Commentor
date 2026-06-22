@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
+    QAbstractScrollArea,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QScrollArea,
+    QSizePolicy,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -22,8 +26,10 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from danmaku.capture.capture_service import list_windows
+from danmaku.capture.capture_service import CaptureService, list_windows
 from danmaku.models import AppSettings, SessionProfile
+from danmaku.ocr import EasyOcrService
+from danmaku.ui.ocr_region_dialog import OcrRegionDialog, pil_image_to_qimage
 
 
 APP_STYLE = """
@@ -31,18 +37,18 @@ QWidget {
     background-color: #111827;
     color: #E5E7EB;
     font-family: "Segoe UI";
-    font-size: 16pt;
+    font-size: 12pt;
 }
 
 QLabel#TitleLabel {
     color: #F9FAFB;
-    font-size: 25pt;
+    font-size: 21pt;
     font-weight: 700;
 }
 
 QLabel#StatusLabel {
     color: #93C5FD;
-    font-size: 14pt;
+    font-size: 11pt;
     font-weight: 600;
 }
 
@@ -56,11 +62,11 @@ QTabWidget::pane {
 QTabBar::tab {
     background-color: #1F2937;
     color: #D1D5DB;
-    min-width: 90px;
-    min-height: 34px;
-    padding: 10px 22px;
+    min-width: 68px;
+    min-height: 30px;
+    padding: 7px 14px;
     margin-right: 3px;
-    font-size: 14pt;
+    font-size: 11pt;
     border-top-left-radius: 8px;
     border-top-right-radius: 8px;
 }
@@ -74,11 +80,11 @@ QTabBar::tab:selected {
 QGroupBox {
     border: 1px solid #374151;
     border-radius: 14px;
-    margin-top: 24px;
-    padding: 22px;
+    margin-top: 18px;
+    padding: 16px;
     background-color: #1F2937;
     color: #93C5FD;
-    font-size: 15pt;
+    font-size: 12pt;
     font-weight: 700;
 }
 
@@ -97,10 +103,10 @@ QTextEdit {
     background-color: #111827;
     border: 1px solid #4B5563;
     border-radius: 8px;
-    min-height: 40px;
-    padding: 7px 12px;
+    min-height: 34px;
+    padding: 5px 9px;
     color: #F9FAFB;
-    font-size: 15pt;
+    font-size: 12pt;
 }
 
 QLineEdit:focus,
@@ -121,15 +127,15 @@ QComboBox::drop-down {
 QCheckBox,
 QRadioButton {
     color: #E5E7EB;
-    min-height: 34px;
-    spacing: 12px;
-    font-size: 14pt;
+    min-height: 30px;
+    spacing: 9px;
+    font-size: 12pt;
 }
 
 QCheckBox::indicator,
 QRadioButton::indicator {
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
 }
 
 /* Buttons */
@@ -138,9 +144,9 @@ QPushButton {
     color: white;
     border: none;
     border-radius: 10px;
-    min-height: 42px;
-    padding: 7px 24px;
-    font-size: 14pt;
+    min-height: 36px;
+    padding: 6px 18px;
+    font-size: 12pt;
     font-weight: 700;
 }
 
@@ -177,21 +183,31 @@ class SettingsWindow(QWidget):
     start_requested = pyqtSignal()
     stop_requested = pyqtSignal()
     session_profile_updated = pyqtSignal()
+    ocr_setup_finished = pyqtSignal(object)
+    ocr_service_prepared = pyqtSignal(object)
 
     def __init__(self, settings: AppSettings) -> None:
         super().__init__()
         self.settings = settings
+        self._ocr_region = settings.ocr_region
+        self._ocr_setup_generation = 0
+        self._ocr_setup_busy = False
+        self._prepared_ocr_service: EasyOcrService | None = None
 
         self.setWindowTitle("Danmaku AI Settings")
-        self.setMinimumSize(760, 690)
+        self.setMinimumSize(560, 460)
+        self.resize(700, 600)
         self.setStyleSheet(APP_STYLE)
         self._build_ui()
+        self.ocr_setup_finished.connect(self._on_ocr_setup_finished)
         self.set_running(False)
+        if self.ocr_enabled_checkbox.isChecked():
+            self._on_ocr_enabled_toggled(True)
 
     def _build_ui(self) -> None:
         root = QVBoxLayout()
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
 
         title = QLabel("Danmaku AI")
         title.setObjectName("TitleLabel")
@@ -205,14 +221,14 @@ class SettingsWindow(QWidget):
         header.addWidget(self.status_label)
 
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_api_tab(), "API")
-        self.tabs.addTab(self._build_context_tab(), "Context")
-        self.tabs.addTab(self._build_capture_tab(), "Capture")
-        self.tabs.addTab(self._build_logging_tab(), "Logging")
-        self.tabs.addTab(
-            self._make_scrollable(self._build_overlay_tab()),
-            "Overlay",
-        )
+        for label, content in (
+            ("API", self._build_api_tab()),
+            ("Context", self._build_context_tab()),
+            ("Capture", self._build_capture_tab()),
+            ("Logging", self._build_logging_tab()),
+            ("Overlay", self._build_overlay_tab()),
+        ):
+            self.tabs.addTab(self._make_scrollable(content), label)
 
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("StopButton")
@@ -234,8 +250,10 @@ class SettingsWindow(QWidget):
     @staticmethod
     def _new_form() -> QFormLayout:
         form = QFormLayout()
-        form.setHorizontalSpacing(24)
-        form.setVerticalSpacing(10)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(8)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         return form
 
     def _build_api_tab(self) -> QWidget:
@@ -404,6 +422,14 @@ class SettingsWindow(QWidget):
         timing_form = self._new_form()
 
         self.window_selector = QComboBox()
+        self.window_selector.setSizeAdjustPolicy(
+            QComboBox.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.window_selector.setMinimumContentsLength(18)
+        self.window_selector.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Fixed,
+        )
         self.refresh_windows_button = QPushButton("Refresh windows")
         self.refresh_windows_button.setObjectName("RefreshButton")
         self.refresh_windows_button.clicked.connect(self._load_windows)
@@ -501,8 +527,59 @@ class SettingsWindow(QWidget):
         )
         image_group.setLayout(image_form)
 
+        ocr_group = QGroupBox("Local OCR")
+        ocr_form = self._new_form()
+
+        self.ocr_enabled_checkbox = QCheckBox("Enable local OCR")
+        self.ocr_enabled_checkbox.setChecked(self.settings.ocr_enabled)
+
+        self.ocr_language_input = QComboBox()
+        self.ocr_language_input.addItem("Korean + English", ("ko", "en"))
+        self.ocr_language_input.addItem("Japanese + English", ("ja", "en"))
+        self.ocr_language_input.addItem("English", ("en",))
+        language_index = self.ocr_language_input.findData(
+            self.settings.ocr_languages
+        )
+        self.ocr_language_input.setCurrentIndex(max(0, language_index))
+
+        self.ocr_confidence_input = QDoubleSpinBox()
+        self.ocr_confidence_input.setRange(0.0, 1.0)
+        self.ocr_confidence_input.setSingleStep(0.05)
+        self.ocr_confidence_input.setDecimals(2)
+        self.ocr_confidence_input.setValue(
+            self.settings.ocr_min_confidence
+        )
+
+        self.ocr_region_button = QPushButton("Select OCR area")
+        self.ocr_region_button.setObjectName("RefreshButton")
+        self.ocr_region_button.clicked.connect(self._select_ocr_region)
+        self.ocr_region_label = QLabel(
+            self._format_ocr_region(self._ocr_region)
+        )
+        self.ocr_region_label.setWordWrap(True)
+        self.ocr_status_label = QLabel(
+            "OCR is off. Enabling it prepares the selected model now."
+        )
+        self.ocr_status_label.setWordWrap(True)
+
+        ocr_form.addRow("", self.ocr_enabled_checkbox)
+        ocr_form.addRow("Language", self.ocr_language_input)
+        ocr_form.addRow("Minimum confidence", self.ocr_confidence_input)
+        ocr_form.addRow("", self.ocr_region_button)
+        ocr_form.addRow("Selected area", self.ocr_region_label)
+        ocr_form.addRow("Status", self.ocr_status_label)
+        ocr_group.setLayout(ocr_form)
+
+        self.ocr_enabled_checkbox.toggled.connect(
+            self._on_ocr_enabled_toggled
+        )
+        self.ocr_language_input.currentIndexChanged.connect(
+            self._on_ocr_language_changed
+        )
+
         layout.addWidget(timing_group)
         layout.addWidget(image_group)
+        layout.addWidget(ocr_group)
         layout.addStretch()
         return tab
 
@@ -733,6 +810,14 @@ class SettingsWindow(QWidget):
         self.settings.history_image_jpeg_quality = (
             self.history_image_quality_input.value()
         )
+        self.settings.ocr_enabled = self.ocr_enabled_checkbox.isChecked()
+        self.settings.ocr_languages = tuple(
+            self.ocr_language_input.currentData() or ("en",)
+        )
+        self.settings.ocr_region = self._ocr_region
+        self.settings.ocr_min_confidence = (
+            self.ocr_confidence_input.value()
+        )
 
         self.settings.font_family = (
             self.font_family_input.text().strip() or "Malgun Gothic"
@@ -812,17 +897,157 @@ class SettingsWindow(QWidget):
             )
             return False
 
+        if self.ocr_enabled_checkbox.isChecked() and self._ocr_setup_busy:
+            self._warn(
+                "OCR is still preparing",
+                "Wait for the OCR model setup to finish before starting.",
+            )
+            return False
+
         return True
     
     def _make_scrollable(self, content: QWidget) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setSizeAdjustPolicy(QAbstractScrollArea.AdjustIgnored)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        content.setMinimumWidth(0)
+        content.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Preferred,
+        )
         scroll.setWidget(content)
         return scroll
 
     def _warn(self, title: str, message: str) -> None:
         QMessageBox.warning(self, title, message)
+
+    def _select_ocr_region(self) -> None:
+        handle = int(self.window_selector.currentData() or 0)
+        title = self.window_selector.currentText() if handle else ""
+        try:
+            service = CaptureService(
+                output_dir=self.settings.capture_output_dir,
+                target_window_title=title,
+                target_window_handle=handle,
+            )
+            image = service.grab_image()
+        except Exception as exc:
+            self._warn("OCR area capture failed", str(exc))
+            return
+
+        dialog = OcrRegionDialog(
+            pil_image_to_qimage(image),
+            self._ocr_region,
+            self,
+        )
+        dialog.setStyleSheet(APP_STYLE)
+        if dialog.exec_() == QDialog.Accepted:
+            self._ocr_region = dialog.selected_region
+            self.ocr_region_label.setText(
+                self._format_ocr_region(self._ocr_region)
+            )
+
+    @staticmethod
+    def _format_ocr_region(
+        region: tuple[float, float, float, float],
+    ) -> str:
+        x, y, width, height = region
+        return (
+            f"x={x:.3f}, y={y:.3f}, width={width:.3f}, "
+            f"height={height:.3f}"
+        )
+
+    def set_ocr_status(self, message: str) -> None:
+        self.ocr_status_label.setText(message)
+
+    def _on_ocr_enabled_toggled(self, enabled: bool) -> None:
+        self._ocr_setup_generation += 1
+        if not enabled:
+            self._ocr_setup_busy = False
+            self._prepared_ocr_service = None
+            self.ocr_status_label.setText("OCR is off.")
+            return
+        self._prepare_ocr_model()
+
+    def _on_ocr_language_changed(self) -> None:
+        self._prepared_ocr_service = None
+        if self.ocr_enabled_checkbox.isChecked():
+            self._ocr_setup_generation += 1
+            self._prepare_ocr_model()
+
+    def _prepare_ocr_model(self) -> None:
+        generation = self._ocr_setup_generation
+        languages = tuple(
+            self.ocr_language_input.currentData() or ("en",)
+        )
+        self._ocr_setup_busy = True
+        self.ocr_enabled_checkbox.setEnabled(False)
+        self.ocr_language_input.setEnabled(False)
+        self.ocr_status_label.setText(
+            "Preparing OCR model… The first setup may download model files."
+        )
+
+        thread = threading.Thread(
+            target=self._ocr_setup_worker,
+            args=(generation, languages),
+            daemon=True,
+        )
+        thread.start()
+
+    def _ocr_setup_worker(
+        self,
+        generation: int,
+        languages: tuple[str, ...],
+    ) -> None:
+        service = EasyOcrService(languages)
+        try:
+            service.prepare()
+            self.ocr_setup_finished.emit(
+                {
+                    "generation": generation,
+                    "languages": languages,
+                    "service": service,
+                    "error": "",
+                }
+            )
+        except Exception as exc:
+            self.ocr_setup_finished.emit(
+                {
+                    "generation": generation,
+                    "languages": languages,
+                    "service": None,
+                    "error": str(exc),
+                }
+            )
+
+    def _on_ocr_setup_finished(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        if data.get("generation") != self._ocr_setup_generation:
+            return
+
+        self._ocr_setup_busy = False
+        self.ocr_enabled_checkbox.setEnabled(True)
+        self.ocr_language_input.setEnabled(True)
+        error = str(data.get("error", ""))
+        service = data.get("service")
+
+        if error or not isinstance(service, EasyOcrService):
+            self._prepared_ocr_service = None
+            self.ocr_enabled_checkbox.blockSignals(True)
+            self.ocr_enabled_checkbox.setChecked(False)
+            self.ocr_enabled_checkbox.blockSignals(False)
+            self.ocr_status_label.setText(f"OCR setup failed: {error}")
+            return
+
+        self._prepared_ocr_service = service
+        languages = ", ".join(data.get("languages", ()))
+        self.ocr_status_label.setText(
+            f"OCR model ready ({languages})."
+        )
+        self.ocr_service_prepared.emit(service)
 
     def _apply_profile_fields(self, *, mark_edited: bool) -> None:
         profile = self.settings.session_profile

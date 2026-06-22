@@ -71,7 +71,7 @@ Interpreted profile:
 
 {previous_summary or "(none)"}
 
-## Current OCR
+## OCR observations from sampled frames
 
 {ocr_text or "(none)"}
 

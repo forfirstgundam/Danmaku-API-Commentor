@@ -37,17 +37,20 @@ class CaptureService:
 
     def capture(self) -> CaptureFrame:
         image_path = self._make_capture_path()
-
-        if self.target_window_handle or self.target_window_title:
-            self._capture_window(image_path)
-        else:
-            self._capture_full_screen(image_path)
+        image = self.grab_image()
+        self._save_image(image, image_path)
 
         return CaptureFrame(
             image_path=image_path,
             timestamp=time.time(),
             ocr_text=None,
         )
+
+    def grab_image(self):
+        """Capture into a PIL image without writing a temporary file."""
+        if self.target_window_handle or self.target_window_title:
+            return self._grab_window_image()
+        return self._grab_full_screen_image()
 
     def _make_capture_path(self) -> Path:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
@@ -74,7 +77,7 @@ class CaptureService:
 
         image.save(output_path, format="PNG")
 
-    def _capture_full_screen(self, output_path: Path) -> None:
+    def _grab_full_screen_image(self):
         try:
             import mss
             from PIL import Image
@@ -83,21 +86,18 @@ class CaptureService:
                 monitor = sct.monitors[1]
                 screenshot = sct.grab(monitor)
                 image = Image.frombytes("RGB", screenshot.size, screenshot.rgb)
-                self._save_image(image, output_path)
-                return
+                return image
         except Exception:
             pass
 
         try:
             from PIL import ImageGrab
 
-            image = ImageGrab.grab()
-            self._save_image(image, output_path)
-            return
+            return ImageGrab.grab()
         except Exception as exc:
             raise RuntimeError(f"Full-screen capture failed: {exc}") from exc
 
-    def _capture_window(self, output_path: Path) -> None:
+    def _grab_window_image(self):
         """
         Captures a window directly rather than reading its screen rectangle.
 
@@ -127,7 +127,7 @@ class CaptureService:
             image = ImageGrab.grab(window=handle)
             if image.width <= 0 or image.height <= 0:
                 raise RuntimeError("The selected window returned an empty image.")
-            self._save_image(image, output_path)
+            return image
 
         except Exception as exc:
             raise RuntimeError(f"Window capture failed: {exc}") from exc

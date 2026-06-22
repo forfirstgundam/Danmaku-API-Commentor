@@ -141,6 +141,13 @@ class AppSettings:
     target_window_title: str = ""  # empty means full screen
     target_window_handle: int = 0  # stable Windows HWND selected in the UI
 
+    # OCR settings. The region is normalized to the captured window/image so
+    # it survives window resizing and fullscreen changes.
+    ocr_enabled: bool = False
+    ocr_languages: tuple[str, ...] = ("ko", "en")
+    ocr_region: tuple[float, float, float, float] = (0.0, 0.65, 1.0, 0.35)
+    ocr_min_confidence: float = 0.30
+
     # Overlay settings
     font_family: str = "Malgun Gothic"
     font_size: int = 25
