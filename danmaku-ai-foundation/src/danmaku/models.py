@@ -140,7 +140,9 @@ class AppSettings:
     # Capture settings
     target_window_title: str = ""  # empty means full screen
     target_window_handle: int = 0  # stable Windows HWND selected in the UI
-
+    capture_mode: str = "full_screen"
+    capture_region: tuple[int, int, int, int] = (0, 0, 0, 0)
+    
     # Overlay settings
     font_family: str = "Malgun Gothic"
     font_size: int = 25

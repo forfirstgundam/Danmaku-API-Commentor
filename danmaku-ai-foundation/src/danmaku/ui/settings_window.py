@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtCore import QPoint, QRect, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QGuiApplication, QPainter, QPen
 from PyQt5.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -172,103 +173,126 @@ QPushButton#RefreshButton:hover {
 }
 """
 
+class CaptureRegionSelector(QWidget):
+    """Transparent full-screen overlay for selecting a capture rectangle."""
 
-class SettingsWindow(QWidget):
-    """Tabbed runtime settings window."""
+    selection_requested = pyqtSignal(tuple)
+    selection_cancelled = pyqtSignal()
 
-QLabel#TitleLabel {
-    color: #F9FAFB;
-    font-size: 32px;
-    font-weight: 700;
-}
+    def __init__(self) -> None:
+        super().__init__(
+            flags=Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowModality(Qt.ApplicationModal)
+        self.setCursor(Qt.CrossCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
 
-QLabel#StatusLabel {
-    color: #93C5FD;
-    font-weight: 600;
-}
+        self.start_position: QPoint | None = None
+        self.selection_rect = QRect()
 
-QTabWidget::pane {
-    border: 1px solid #374151;
-    border-radius: 12px;
-    background-color: #111827;
-}
+        virtual_geometry = self._build_virtual_geometry()
+        self.setGeometry(virtual_geometry)
+        self.show()
+        self.activateWindow()
 
-QTabBar::tab {
-    background-color: #1F2937;
-    color: #D1D5DB;
-    padding: 10px 18px;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
-    margin-right: 2px;
-}
+    def _build_virtual_geometry(self) -> QRect:
+        screens = QGuiApplication.screens()
+        if not screens:
+            return QRect(0, 0, 0, 0)
 
-QTabBar::tab:selected {
-    background-color: #2563EB;
-    color: white;
-}
+        union_rect = screens[0].geometry()
+        for screen in screens[1:]:
+            union_rect = union_rect.united(screen.geometry())
 
-QGroupBox {
-    border: 1px solid #374151;
-    border-radius: 14px;
-    margin-top: 18px;
-    padding: 16px;
-    background-color: #1F2937;
-    color: #93C5FD;
-    font-weight: 700;
-}
+        return union_rect
 
-QGroupBox::title {
-    subcontrol-origin: margin;
-    left: 14px;
-    padding: 0 6px;
-}
+    def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.LeftButton:
+            return
 
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit {
-    background-color: #111827;
-    border: 1px solid #4B5563;
-    border-radius: 8px;
-    padding: 7px;
-    color: #F9FAFB;
-}
+        self.start_position = event.globalPos()
+        self.selection_rect = QRect(self.start_position, self.start_position)
+        self.update()
 
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus, QTextEdit:focus {
-    border: 1px solid #60A5FA;
-}
+    def mouseMoveEvent(self, event) -> None:
+        if self.start_position is None:
+            return
 
-QCheckBox, QRadioButton {
-    color: #E5E7EB;
-    spacing: 8px;
-}
+        self.selection_rect = QRect(
+            self.start_position,
+            event.globalPos(),
+        ).normalized()
+        self.update()
 
-QPushButton {
-    background-color: #2563EB;
-    color: white;
-    border: none;
-    border-radius: 10px;
-    padding: 12px 22px;
-    font-weight: 700;
-}
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() != Qt.LeftButton or self.start_position is None:
+            return
 
-QPushButton:hover {
-    background-color: #1D4ED8;
-}
+        self.selection_rect = QRect(
+            self.start_position,
+            event.globalPos(),
+        ).normalized()
+        self.start_position = None
 
-QPushButton#StopButton {
-    background-color: #374151;
-}
+        if self.selection_rect.width() < 100 or self.selection_rect.height() < 100:
+            QMessageBox.warning(
+                self,
+                "Selection too small",
+                "Capture region must be at least 100x100 pixels.",
+            )
+            self.selection_rect = QRect()
+            self.update()
+            return
 
-QPushButton#StopButton:hover {
-    background-color: #4B5563;
-}
+        self.selection_requested.emit(
+            self._logical_rect_to_physical(self.selection_rect)
+        )
+        self.close()
 
-QPushButton#RefreshButton {
-    background-color: #0F766E;
-}
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key_Escape:
+            self.selection_cancelled.emit()
+            self.close()
 
-QPushButton#RefreshButton:hover {
-    background-color: #0D9488;
-}
-"""
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 120))
+
+        if self.selection_rect.isNull():
+            return
+
+        local_rect = QRect(
+            self.selection_rect.topLeft() - self.geometry().topLeft(),
+            self.selection_rect.size(),
+        )
+
+        painter.setBrush(QColor(0, 120, 215, 80))
+        painter.setPen(QPen(QColor(0, 180, 255), 2))
+        painter.drawRect(local_rect)
+
+        text = f"{self.selection_rect.width()} x {self.selection_rect.height()}"
+        painter.setPen(QColor(255, 255, 255))
+        painter.drawText(local_rect.topLeft() + QPoint(6, -8), text)
+
+    def _logical_rect_to_physical(
+        self,
+        rect: QRect,
+    ) -> tuple[int, int, int, int]:
+        screen = (
+            QGuiApplication.screenAt(rect.topLeft())
+            or QGuiApplication.primaryScreen()
+        )
+        ratio = screen.devicePixelRatio()
+
+        left = int(round(rect.left() * ratio))
+        top = int(round(rect.top() * ratio))
+        width = int(round(rect.width() * ratio))
+        height = int(round(rect.height() * ratio))
+
+        return left, top, width, height
+
 
 
 class SettingsWindow(QWidget):
@@ -537,6 +561,20 @@ class SettingsWindow(QWidget):
 
         timing_form.addRow("Capture window", self.window_selector)
         timing_form.addRow("", self.refresh_windows_button)
+       
+        self.capture_mode_label = QLabel(
+            self.settings.capture_mode.replace("_", " ").title()
+        )
+        self.capture_region_label = QLabel("None")
+        self.select_capture_region_button = QPushButton("Select Capture Region")
+        self.select_capture_region_button = QPushButton("Select Capture Region")
+        self.select_capture_region_button.clicked.connect(
+        self._on_select_capture_region_clicked
+)
+
+        timing_form.addRow("Capture mode", self.capture_mode_label)
+        timing_form.addRow("Capture region", self.capture_region_label)
+        timing_form.addRow("", self.select_capture_region_button)
         timing_form.addRow("Comment/API interval", self.interval_input)
         timing_form.addRow("", self.multi_frame_checkbox)
         timing_form.addRow(
@@ -893,12 +931,12 @@ class SettingsWindow(QWidget):
             self.clear_active_checkbox.isChecked()
         )
 
-        self.settings.save_captures = self.save_captures_checkbox.isChecked()
+        #self.settings.save_captures = self.save_captures_checkbox.isChecked()
         self.settings.save_comments = self.save_comments_checkbox.isChecked()
         self.settings.save_api_images = self.save_api_images_checkbox.isChecked()
         self.settings.log_root_dir = Path(self.log_root_input.text().strip() or "logs")
 
-        self._apply_prompt_selection()
+        #self._apply_prompt_selection()
 
     def set_running(self, is_running: bool) -> None:
         self.status_label.setText(
@@ -1009,6 +1047,37 @@ class SettingsWindow(QWidget):
             message += f" Error: {profile.interpretation_error}"
         self.profile_status_label.setText(message)
 
+    def _on_capture_region_selected(
+        self,
+        region: tuple[int, int, int, int],
+    ) -> None:
+        self.settings.capture_mode = "region"
+        self.settings.capture_region = region
+        self.settings.target_window_title = ""
+        self.settings.target_window_handle = 0
+        self.window_selector.setCurrentIndex(0)
+
+        self.capture_mode_label.setText("Region")
+        left, top, width, height = region
+        self.capture_region_label.setText(
+            f"x={left}, y={top}, width={width}, height={height}"
+        )
+
+    def _on_select_capture_region_clicked(self) -> None:
+        
+        self.region_selector = CaptureRegionSelector()
+        self.region_selector.selection_requested.connect(
+            self._on_capture_region_selected
+        )
+        self.region_selector.selection_cancelled.connect(
+            self._on_capture_region_selection_cancelled
+        )
+
+    def _on_capture_region_selection_cancelled(self) -> None:
+        pass
+
+        
+        
     def _load_windows(self) -> None:
         current_handle = (
             self.window_selector.currentData()
