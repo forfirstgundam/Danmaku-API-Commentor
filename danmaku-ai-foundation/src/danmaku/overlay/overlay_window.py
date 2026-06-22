@@ -49,7 +49,7 @@ class OverlayWindow(QWidget):
             Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
             | Qt.WindowTransparentForInput
-            | Qt.Tool
+            | Qt.WindowDoesNotAcceptFocus
         )
 
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -88,6 +88,13 @@ class OverlayWindow(QWidget):
         self.animation_timer.timeout.connect(self._animation_tick)
         self.animation_timer.start(self.settings.animation_interval_ms)
 
+        # A video player can enter fullscreen after this overlay is shown and
+        # place its own topmost window above us. Reassert the overlay's z-order
+        # without activating or focusing it.
+        self.topmost_timer = QTimer(self)
+        self.topmost_timer.timeout.connect(self._ensure_windows_topmost)
+        self.topmost_timer.start(500)
+
         self.spawn_timer = QTimer(self)
         self.spawn_timer.setSingleShot(True)
         self.spawn_timer.timeout.connect(self._on_spawn_timer_timeout)
@@ -113,6 +120,81 @@ class OverlayWindow(QWidget):
             "相棒",
             "最高！",
         ]
+
+    def showEvent(self, event) -> None:
+        """Keep the overlay independent from the minimized settings window."""
+        super().showEvent(event)
+        self._apply_windows_overlay_style()
+        self._ensure_windows_topmost()
+
+    def _apply_windows_overlay_style(self) -> None:
+        if sys.platform != "win32":
+            return
+
+        # Qt.Tool keeps a window out of the taskbar, but Windows also hides
+        # Qt tool windows when the application's main window is minimized.
+        # Apply only the native taskbar/no-activation styles instead, leaving
+        # this overlay as an independent top-level Qt window.
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        get_style = user32.GetWindowLongPtrW
+        set_style = user32.SetWindowLongPtrW
+        get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+        get_style.restype = ctypes.c_ssize_t
+        set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+        set_style.restype = ctypes.c_ssize_t
+
+        gwl_exstyle = -20
+        ws_ex_transparent = 0x00000020
+        ws_ex_toolwindow = 0x00000080
+        ws_ex_noactivate = 0x08000000
+
+        handle = int(self.winId())
+        style = get_style(handle, gwl_exstyle)
+        style |= (
+            ws_ex_transparent
+            | ws_ex_toolwindow
+            | ws_ex_noactivate
+        )
+        set_style(handle, gwl_exstyle, style)
+
+    def _ensure_windows_topmost(self) -> None:
+        if sys.platform != "win32" or not self.isVisible():
+            return
+
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        set_window_pos = user32.SetWindowPos
+        set_window_pos.argtypes = [
+            wintypes.HWND,
+            wintypes.HWND,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_int,
+            wintypes.UINT,
+        ]
+        set_window_pos.restype = wintypes.BOOL
+
+        hwnd_topmost = -1
+        swp_nosize = 0x0001
+        swp_nomove = 0x0002
+        swp_noactivate = 0x0010
+        swp_showwindow = 0x0040
+
+        set_window_pos(
+            int(self.winId()),
+            hwnd_topmost,
+            0,
+            0,
+            0,
+            0,
+            swp_nosize | swp_nomove | swp_noactivate | swp_showwindow,
+        )
 
     def add_comment_batch(self, batch: CommentBatch) -> None:
         """
