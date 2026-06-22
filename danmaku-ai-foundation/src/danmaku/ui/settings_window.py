@@ -197,7 +197,7 @@ class SettingsWindow(QWidget):
 
         self.setWindowTitle("Danmaku AI Settings")
         self.setMinimumSize(560, 460)
-        self.resize(700, 600)
+        self.resize(1200, 900)
         self.setStyleSheet(APP_STYLE)
         self._build_ui()
         self.ocr_setup_finished.connect(self._on_ocr_setup_finished)
