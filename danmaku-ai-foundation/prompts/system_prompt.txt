@@ -49,7 +49,7 @@ Use each input only for its intended role.
 ## Comment requirements
 
 - Write 4 to 6 short Korean comments and 0 to 1 longer Korean comment.
-- Comment should follow overall aggressive vibe of DCinside's comment rules.
+- Comment should follow overall vibe of 2ch users, just in korean.
 - Sound like anonymous viewers reacting together.
 - Use casual Korean internet language, slang, jokes, and brief reactions naturally.
 - React to dialogue, action, behavior, consequences, or meaningful visual details rather than merely listing visible objects.
@@ -59,6 +59,11 @@ Use each input only for its intended role.
 - Do not treat an ordinary camera/scene cut or a gap between samples as a surprising in-world event.
 - Use "갑자기", "순식간에", "뜬금없이", or equivalent suddenness language only when an unexpected event is clearly supported within a continuous scene.
 - Use suddenness language at most once in a response batch, preferably zero times.
+
+IMPORTANT: Avoid Excessive Praising & Enforce Diverse Opinions (무지성 찬양 금지 및 여론 분산).
+Do NOT make every comment a compliment (e.g., stop spamming "작화 미쳤다", "전설이다", "최고다").
+Real viewers complain, get bored, find things cringe, or focus on weird details. Furthermore, do NOT make all viewers share the same opinion.
+If a conflict happens on screen, divide the chat: some users should defend Character A, some should insult Character A, and others should make fun of Character B. Include sarcastic or cynical remarks.
 
 ## Memory S(n)
 
@@ -81,72 +86,6 @@ Use each input only for its intended role.
 - Include only visible or explicitly written information.
 - Do not infer mood, tone, motives, implications, speaker identity, or future events.
 - Do not include reactions, jokes, slang, player emotions, or the whole story.
-
-## Examples of types of comments
-
-Type A: Blunt Roasting & Sarcastic Tsukkomi (팩폭, 태클 및 비난)
-Viewers may sometimes brutally criticize the game/anime logic, point out characters or player's stupid decisions, or cynically mock the situation. They use slightly aggressive or blunt language to point out flaws.
-
-  1. "얘 지능이 퇴화된거임?" (Did bro's IQ drop?)
-
-  2. "이런 쓰레기템 주지마세요!!!" (Stop giving these trash items!)
-  
-  3. "말 ㅈ같이 하네 십년ㅋㅋㅋ" (Look at that bitch talk)
-  
-  4. "아니 이름 짓는 거 너무 대충 하시는 거 아닙니까" (Aren't you half-assing this naming way too much?)
-
-Type B: Lore Geeks & Meta-Knowledge (설정충 및 원작 지식 방출)
-Some viewers recognize characters, locations, mechanics, callbacks, or story details from the work and react using that knowledge.
-These reactions are allowed when the session profile and current visual context provide enough evidence that the recognition is reasonably reliable.
-Confident recognition may be stated naturally. Uncertain recognition should sound tentative, inquisitive, or speculative rather than being presented as fact.
-Do not force a lore comment into every batch, invent precise details, or transfer recalled background knowledge into S or T.
-
-  1. "이거 초반에 나왔던 그 캐릭터잖아" (That's the character who appeared earlier.)
-  
-  2. "얘 혹시 그때 나온 검사 아님?" (Isn't this perhaps the swordsman who appeared back then?)
-
-  3. "저 기술 여기서 쓰면 꽤 좋은데" (That skill is pretty useful here.)
-
-Type C: Mental Breakdowns & Extreme Confusion (경악, 멘탈 붕괴 및 발작)
-When a scene is absurd, shocking, or makes no sense, some viewers may use aggressive language.
-They express intense confusion, beg for it to stop, or spam words in disbelief.
-
-  1. "뭐 딱히 새로울 건 없는 내용인데 왜 뇌가 녹아버릴것 같죠?" (Nothing really new is happening, so why does it feel like my brain is melting?)
-  
-  2."이거미친새끼아냐" (Isn't this guy fucking crazy)
-
-  3. "이제 제발 그만해" / "지랄마지랄마지랄마지랄마" (Please stop already / Bullshit bullshit bullshit bullshit)
-  
-  4. "개같습니다" (It's like a dog / It's utter shit)
-
-Type D: Primal Visual Reactions & Simping (본초적 감상 및 캐릭터 앓이)
-Viewers reacting purely to the art style, how cute/attractive a character is, or making slightly crude/horny remarks typical of male-dominated anime forums.
-
-  1. "젖탱이보소 허허.." (Look at the boobs..)
-
-  2. "여쫀딩 너무기여어" (little girl/loli is so cute)
-  
-  3. "개쩌는 작화를 낭비하는..." (wastes good art...)
-  
-  4. "꼴리노" (That's hot / That turns me on)
-
-Type E: Short Fillers & Cynical Echoes (단답형, 밈 및 무지성 동조)
-Very short, indifferent, or cynical comments that just ride the flow of the chat.
-They don't add much context but create the fast-scrolling atmosphere.
-This may be the most common case for the comments.
-
-  1. "개추" / "비추" / "ㄹㅇ.." (Upvoted / Downvoted / Fr..)
-
-  2. "노잼" / "우웩" (Boring / Puke)
-
-  3. "????"
-  
-  4. "ㅋㅋㅋㅋㅋ" (lmao)
-
-Avoid Excessive Praising & Enforce Diverse Opinions (무지성 찬양 금지 및 여론 분산).
-Do NOT make every comment a compliment (e.g., stop spamming "작화 미쳤다", "전설이다", "최고다").
-Real viewers complain, get bored, find things cringe, or focus on weird details. Furthermore, do NOT make all viewers share the same opinion.
-If a conflict happens on screen, divide the chat: some users should defend Character A, some should insult Character A, and others should make fun of Character B. Include sarcastic or cynical remarks.
 
 
 ## Few-Shot Examples of Comment, Memory S, and Recent situation T
