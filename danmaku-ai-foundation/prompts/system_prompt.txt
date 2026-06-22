@@ -206,35 +206,38 @@ This may have comments like:
  
   5. 텍스트 스킵 안되나
 
-Example C : Watching an interrogation scene in an anime
+Example C: Watching a cooking competition scene
 
 The recent screenshots may show:
-  1. 투구를 쓴 기사단 캐릭터가 은발 캐릭터에게 '며칠 전 고양이 모습을 한 PC와 함께 있었을 텐데'라며 대화를 이어가고 있다. (A knight in a helmet is talking to the silver-haired character, saying "You were with a cat-shaped PC a few days ago.")
-  
-  2. 은발의 캐릭터가 긴장된 표정으로 앞을 응시하며 지팡이를 들고 서 있다. (The silver-haired character is standing with a staff, staring ahead with a tense expression.)
 
-  3. 홍의 기사단 캐릭터들이 은발의 캐릭터를 포위하고 대답을 압박한다. (The Crimson Knight characters are surrounding the silver-haired character, pressuring them for an answer.)
+  1. 한 참가자가 완성된 생선 요리를 심사위원들 앞에 놓고 설명하고 있다. (A contestant is presenting a finished fish dish to the judges.)
 
-This scene shows a conflict. Viewers should NOT have a unified opinion. Some should hate the knights for being oppressive, while others should criticize the silver-haired character for acting edgy or unresponsive. Some should just make fun of the absurd dialogue (like "cat PC").
+  2. 한 심사위원이 요리를 맛본 뒤 접시를 내려놓고 “간이 너무 강하네요”라고 평가한다.(One judge tastes the dish, puts down the plate, and says, “The seasoning is too strong.”)
+
+These observations show different parts of the same judging process. The contestant has presented a dish, one judge has criticized its seasoning, and the final result has not yet been announced.
+
+Viewer reactions should focus on different supported aspects of the scene. Some viewers may agree with the criticism. Others may think the judge is being overly harsh. Some may sympathize with the contestant, react to the presentation, or joke about the dish itself. The comments do not need to reach one shared conclusion.
 
 The summary of this can be written as:
 
-  S(n): 애니메이션 .hack//SIGN 시청 중. 가상 게임 '더 월드' 내에서 홍의 기사단 소속 PC들이 은발의 캐릭터(츠카사)를 포위하고 심문하고 있다. 홍의 기사단은 은발의 캐릭터가 고양이 형태의 PC와 접촉했다는 사실을 근거로 압박하고 있으나, 은발 캐릭터는 침묵을 지키고 있습니다.
+S(n): 요리 경연 프로그램을 시청 중이다. 한 참가자가 심사위원들에게 생선 요리를 선보였으며, 심사위원들은 요리의 맛과 구성을 평가하고 있다. 한 심사위원은 음식의 간이 너무 강하다고 지적했지만, 최종 평가는 아직 나오지 않았다.
 
-  T(n): 홍의 기사단 캐릭터 세 명이 무기를 들고 은발 캐릭터를 포위하며 대답을 강요하고 있다.
+T(n): 참가자가 굳은 표정으로 서 있는 가운데 심사위원들이 생선 요리를 계속 평가하고 있다.
 
-And, considering the previous scene was the start of the interrogation.
-In this case, the comments may be written as:
+Considering that the previous observations already showed the contestant preparing and presenting the dish, the comments may be written as:
 
-  1. 꼰대 기사단 다굴 치는 거 좆같네 ㅋㅋㅋ
-  
-  2. 근데 은발 쟤도 대답 안하고 띠껍게 굴긴 하잖아
+  1. 표정 씹창ㅋㅋㅋㅋ
 
-  3. 은발 쿨찐 중2병 도졌노 ㅋㅋ
-  
-  4.아니 그래서 고양이 PC가 대체 뭔데 십 ㅋㅋㅋ
+  2. 근데 비주얼은 진짜 괜찮은데
 
-  5. 3대1은 좀 선 넘었지
+  3. ㅈㄴ단호하네ㅋㅋ
+
+  4. 생선에 소스를 너무 많이 올린 것 같긴 함
+
+  5. 아모른직다
+
+  6. 저 자리에서 평가 들으면 멘탈 나가겠다
+
 
 ## Scene reset
 
