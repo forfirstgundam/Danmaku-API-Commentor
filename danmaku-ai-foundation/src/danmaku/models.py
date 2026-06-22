@@ -136,6 +136,7 @@ class AppSettings:
     capture_output_dir: Path = Path("logs/current/captures")
     api_image_output_dir: Path = Path("logs/current/api_images")
     comment_log_path: Path = Path("logs/current/comments.jsonl")
+    ocr_log_path: Path = Path("logs/current/ocr.jsonl")
 
     # Capture settings
     target_window_title: str = ""  # empty means full screen

@@ -181,6 +181,7 @@ class SettingsWindow(QWidget):
     """Tabbed runtime settings window."""
 
     start_requested = pyqtSignal()
+    ocr_test_requested = pyqtSignal()
     stop_requested = pyqtSignal()
     session_profile_updated = pyqtSignal()
     ocr_setup_finished = pyqtSignal(object)
@@ -569,6 +570,11 @@ class SettingsWindow(QWidget):
             "OCR is off. Enabling it prepares the selected model now."
         )
         self.ocr_status_label.setWordWrap(True)
+        self.ocr_test_button = QPushButton("Start OCR test")
+        self.ocr_test_button.setObjectName("RefreshButton")
+        self.ocr_test_button.clicked.connect(
+            self._on_ocr_test_clicked
+        )
 
         ocr_form.addRow("", self.ocr_enabled_checkbox)
         ocr_form.addRow("Language", self.ocr_language_input)
@@ -577,6 +583,7 @@ class SettingsWindow(QWidget):
         ocr_form.addRow("", self.ocr_region_button)
         ocr_form.addRow("Selected area", self.ocr_region_label)
         ocr_form.addRow("Status", self.ocr_status_label)
+        ocr_form.addRow("", self.ocr_test_button)
         ocr_group.setLayout(ocr_form)
 
         self.ocr_enabled_checkbox.toggled.connect(
@@ -872,11 +879,22 @@ class SettingsWindow(QWidget):
             self.log_root_input.text().strip() or "logs"
         )
 
-    def set_running(self, is_running: bool) -> None:
+    def set_running(
+        self,
+        is_running: bool,
+        ocr_test: bool = False,
+    ) -> None:
         self.status_label.setText(
-            "Status: running" if is_running else "Status: stopped"
+            (
+                "Status: OCR test running"
+                if is_running and ocr_test
+                else "Status: running"
+                if is_running
+                else "Status: stopped"
+            )
         )
         self.start_button.setEnabled(not is_running)
+        self.ocr_test_button.setEnabled(not is_running)
         self.stop_button.setEnabled(is_running)
 
     def _on_start_clicked(self) -> None:
@@ -889,6 +907,23 @@ class SettingsWindow(QWidget):
     def _on_stop_clicked(self) -> None:
         self.set_running(False)
         self.stop_requested.emit()
+
+    def _on_ocr_test_clicked(self) -> None:
+        if not self.ocr_enabled_checkbox.isChecked():
+            self._warn(
+                "OCR is disabled",
+                "Enable local OCR before starting an OCR test.",
+            )
+            return
+        if self._ocr_setup_busy:
+            self._warn(
+                "OCR is still preparing",
+                "Wait for the OCR model setup to finish before testing.",
+            )
+            return
+        self.apply_to_settings()
+        self.set_running(True, ocr_test=True)
+        self.ocr_test_requested.emit()
 
     def _validate_before_start(self) -> bool:
         if not self.model_input.text().strip():

@@ -87,6 +87,8 @@ class DanmakuApp:
 
         self.consecutive_api_failures = 0
         self.is_running = False
+        self.ocr_test_mode = False
+        self._start_as_ocr_test = False
         self.is_busy = False
         self.is_sampling = False
         self.capture_lock = threading.Lock()
@@ -130,6 +132,9 @@ class DanmakuApp:
         self.settings_window = SettingsWindow(settings=self.settings)
 
         self.settings_window.start_requested.connect(self.start)
+        self.settings_window.ocr_test_requested.connect(
+            self.start_ocr_test
+        )
         self.settings_window.stop_requested.connect(self.stop)
         self.settings_window.session_profile_updated.connect(
             self._on_manual_session_profile_updated
@@ -153,10 +158,17 @@ class DanmakuApp:
         self.settings_window.show()
 
     def start(self) -> None:
+        ocr_test_mode = self._start_as_ocr_test
+        self._start_as_ocr_test = False
+        self.ocr_test_mode = ocr_test_mode
         self.settings_window.apply_to_settings()
 
         description = self.settings.user_stream_description.strip()
-        if description != self.settings.session_profile.source_description:
+        if (
+            not ocr_test_mode
+            and description
+            != self.settings.session_profile.source_description
+        ):
             self.settings.session_profile = SessionProfile.pending(description)
             self.settings_window.set_session_profile(
                 self.settings.session_profile
@@ -208,12 +220,17 @@ class DanmakuApp:
             image_format="JPEG",
             jpeg_quality=self.settings.sample_capture_jpeg_quality,
         )
-        self.llm_client = self._build_llm_client()
-        self.fallback_llm_client = self._build_fallback_llm_client()
-        self._save_system_prompt_snapshot()
-        self._save_session_context()
+        if not ocr_test_mode:
+            self.llm_client = self._build_llm_client()
+            self.fallback_llm_client = self._build_fallback_llm_client()
+            self._save_system_prompt_snapshot()
+            self._save_session_context()
 
-        print("[app] starting")
+        print(
+            "[app] starting OCR test"
+            if ocr_test_mode
+            else "[app] starting"
+        )
         print(f"[app] dummy_api={self.settings.use_dummy_api}")
         print(f"[app] api_key_set={bool(self.settings.api_key)}")
         print(f"[app] api_provider={self.settings.api_provider}")
@@ -265,6 +282,10 @@ class DanmakuApp:
             f"{self.settings.comment_log_path.resolve()}"
         )
         print(
+            "[app] ocr_log_path="
+            f"{self.settings.ocr_log_path.resolve()}"
+        )
+        print(
             "[app] target_window="
             f"{self.settings.target_window_title or 'Full screen'}, "
             f"handle={self.settings.target_window_handle or '(none)'}"
@@ -282,35 +303,59 @@ class DanmakuApp:
                 "OCR enabled; waiting for the first real-time scan."
             )
 
-        interval_ms = self.settings.capture_interval_seconds * 1000
-        self.capture_timer.start(interval_ms)
-
-        sample_interval_seconds = (
-            self.settings.frame_sample_interval_seconds
-            if self.settings.use_multi_frame_context
-            else self.settings.capture_interval_seconds
-        )
-        self.sample_timer.setInterval(max(1, sample_interval_seconds) * 1000)
         self.ocr_capture_timer.setInterval(
             max(250, self.settings.ocr_capture_interval_ms)
         )
-
-        self.overlay.show()
         self.is_running = True
-        self.settings_window.set_running(True)
-
-        # Minimize the settings window so it is less likely to be captured.
-        self.settings_window.showMinimized()
-
-        print(
-            "[app] first frame sample scheduled after "
-            f"{self.settings.first_capture_delay_ms} ms"
+        self.settings_window.set_running(
+            True,
+            ocr_test=ocr_test_mode,
         )
 
-        QTimer.singleShot(
-            self.settings.first_capture_delay_ms,
-            self._begin_sampling,
-        )
+        if not ocr_test_mode:
+            interval_ms = self.settings.capture_interval_seconds * 1000
+            self.capture_timer.start(interval_ms)
+            sample_interval_seconds = (
+                self.settings.frame_sample_interval_seconds
+                if self.settings.use_multi_frame_context
+                else self.settings.capture_interval_seconds
+            )
+            self.sample_timer.setInterval(
+                max(1, sample_interval_seconds) * 1000
+            )
+            self.overlay.show()
+
+        # Keep the controls and live OCR status visible during a test. Normal
+        # comment runs still minimize the settings window to keep it out of
+        # fullscreen captures.
+        if not ocr_test_mode:
+            self.settings_window.showMinimized()
+
+        if ocr_test_mode:
+            print("[ocr] test mode: API calls and frame sampling disabled")
+            QTimer.singleShot(
+                self.settings.first_capture_delay_ms,
+                self._begin_ocr_test,
+            )
+        else:
+            print(
+                "[app] first frame sample scheduled after "
+                f"{self.settings.first_capture_delay_ms} ms"
+            )
+            QTimer.singleShot(
+                self.settings.first_capture_delay_ms,
+                self._begin_sampling,
+            )
+
+    def start_ocr_test(self) -> None:
+        self._start_as_ocr_test = True
+        self.start()
+
+    def _begin_ocr_test(self) -> None:
+        if not self.is_running or not self.ocr_test_mode:
+            return
+        self._trigger_ocr_capture()
+        self.ocr_capture_timer.start()
 
     def stop(self) -> None:
         self.capture_timer.stop()
@@ -318,6 +363,7 @@ class DanmakuApp:
         self.ocr_capture_timer.stop()
         self.overlay.hide()
         self.is_running = False
+        self.ocr_test_mode = False
         self.ocr_generation += 1
         self.ocr_busy = False
         self.settings_window.set_running(False)
@@ -651,6 +697,7 @@ class DanmakuApp:
 
         if data.get("skipped_unchanged"):
             self.ocr_skipped_unchanged_count += 1
+            self._save_ocr_record(data, added_to_buffer=False)
             return
 
         signature = data.get("signature")
@@ -661,6 +708,7 @@ class DanmakuApp:
         confidence = data.get("confidence", 0.0)
         timestamp = data.get("timestamp", time.time())
 
+        added = False
         if isinstance(text, str) and text:
             added = self.ocr_buffer.add(
                 OcrObservation(
@@ -680,6 +728,7 @@ class DanmakuApp:
             self.settings_window.set_ocr_status(
                 f"Last OCR: {text[:120]}"
             )
+        self._save_ocr_record(data, added_to_buffer=added)
 
     def _on_ocr_error(self, payload: object) -> None:
         data = payload if isinstance(payload, dict) else {}
@@ -695,6 +744,48 @@ class DanmakuApp:
         if self.ocr_consecutive_errors in {1, 5} or fatal:
             print(f"[ocr] failed: {message}")
         self.settings_window.set_ocr_status(f"OCR error: {message}")
+        self._save_ocr_record(
+            {
+                "timestamp": time.time(),
+                "error": message,
+                "fatal": fatal,
+            },
+            added_to_buffer=False,
+        )
+
+    def _save_ocr_record(
+        self,
+        data: dict[str, object],
+        added_to_buffer: bool,
+    ) -> None:
+        timestamp = float(data.get("timestamp", time.time()))
+        record = {
+            "event": "error" if data.get("error") else "scan",
+            "scan_number": self.ocr_scan_count,
+            "timestamp": datetime.fromtimestamp(timestamp).isoformat(
+                timespec="milliseconds"
+            ),
+            "timestamp_unix": timestamp,
+            "mode": "ocr_test" if self.ocr_test_mode else "normal",
+            "text": data.get("text", ""),
+            "confidence": data.get("confidence", 0.0),
+            "added_to_context_buffer": added_to_buffer,
+            "skipped_unchanged": bool(
+                data.get("skipped_unchanged", False)
+            ),
+            "visual_difference": data.get("visual_difference"),
+            "duration_sec": data.get("duration_sec"),
+            "capture_duration_sec": data.get("capture_duration_sec"),
+            "error": data.get("error"),
+            "fatal": bool(data.get("fatal", False)),
+            "ocr_region": self.settings.ocr_region,
+            "target_window_title": self.settings.target_window_title,
+            "target_window_handle": self.settings.target_window_handle,
+        }
+        path = self.settings.ocr_log_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
     def _select_historical_frames_for_request(self) -> list[CaptureFrame]:
         frame_buffer = list(self.frame_buffer)
@@ -1472,6 +1563,9 @@ class DanmakuApp:
         self.settings.comment_log_path = (
             self.settings.run_log_dir / "comments.jsonl"
         )
+        self.settings.ocr_log_path = (
+            self.settings.run_log_dir / "ocr.jsonl"
+        )
 
         self.settings.capture_output_dir.mkdir(
             parents=True,
@@ -1498,6 +1592,7 @@ class DanmakuApp:
             "[log] comments="
             f"{self.settings.comment_log_path.resolve()}"
         )
+        print(f"[log] ocr={self.settings.ocr_log_path.resolve()}")
 
     def _save_session_context(self) -> None:
         run_dir = self.settings.run_log_dir
