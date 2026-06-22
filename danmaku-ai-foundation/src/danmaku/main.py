@@ -7,6 +7,14 @@ import threading
 import time
 from datetime import datetime
 
+# On Windows, PyTorch must load its native DLLs before PyQt.
+# EasyOCR imports torch later, so preload it here.
+try:
+    import torch  # noqa: F401
+except ImportError:
+    # OCR remains an optional dependency.
+    torch = None
+
 from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QApplication
 
