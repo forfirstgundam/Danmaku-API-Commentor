@@ -32,12 +32,31 @@ def load_settings_from_env() -> AppSettings:
     Do not hardcode real API keys in the source code.
     """
     api_provider = os.getenv("API_PROVIDER", "gemini").strip().lower()
-    api_key_env = "OPENAI_API_KEY" if api_provider == "openai" else "GEMINI_API_KEY"
+    api_key_env_by_provider = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "deepinfra": "DEEPINFRA_API_KEY",
+        "gemini": "GEMINI_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "mistral": "MISTRAL_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "together": "TOGETHER_API_KEY",
+        "xai": "XAI_API_KEY",
+    }
+    api_key_env = api_key_env_by_provider.get(api_provider, "GEMINI_API_KEY")
     api_key = os.getenv(api_key_env, "").strip()
-    default_model = (
-        "gpt-5.4-nano"
-        if api_provider == "openai"
-        else "gemini-2.5-flash-lite"
+    default_model_by_provider = {
+        "anthropic": "claude-sonnet-4-5",
+        "deepinfra": "Qwen/Qwen2.5-VL-7B-Instruct",
+        "gemini": "gemini-2.5-flash-lite",
+        "groq": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "mistral": "mistral-small-2506",
+        "openai": "gpt-5.4-mini",
+        "together": "Qwen/Qwen3.5-9B",
+        "xai": "grok-4.3",
+    }
+    default_model = default_model_by_provider.get(
+        api_provider,
+        "gemini-2.5-flash-lite",
     )
     use_dummy_raw = os.getenv("DANMAKU_USE_DUMMY_API", "true").strip().lower()
     send_screenshot_raw = os.getenv(

@@ -37,6 +37,12 @@ class SettingsWindow(QWidget):
         self.provider_input = QComboBox()
         self.provider_input.addItem("Gemini", "gemini")
         self.provider_input.addItem("OpenAI", "openai")
+        self.provider_input.addItem("Anthropic", "anthropic")
+        self.provider_input.addItem("DeepInfra", "deepinfra")
+        self.provider_input.addItem("Together AI", "together")
+        self.provider_input.addItem("Mistral", "mistral")
+        self.provider_input.addItem("Groq", "groq")
+        self.provider_input.addItem("xAI", "xai")
         provider_index = self.provider_input.findData(settings.api_provider)
         self.provider_input.setCurrentIndex(max(0, provider_index))
         self.provider_input.currentIndexChanged.connect(
@@ -69,7 +75,8 @@ class SettingsWindow(QWidget):
         self.interval_input.setSuffix(" sec")
 
         self.api_image_size_input = QSpinBox()
-        self.api_image_size_input.setRange(320, 1920)
+        self.api_image_size_input.setRange(0, 1920)
+        self.api_image_size_input.setSpecialValueText("Original")
         self.api_image_size_input.setSingleStep(64)
         self.api_image_size_input.setValue(settings.api_image_max_dimension)
         self.api_image_size_input.setSuffix(" px")
@@ -178,7 +185,17 @@ class SettingsWindow(QWidget):
 
     def _update_api_key_placeholder(self) -> None:
         provider = self.provider_input.currentData()
-        placeholder = "OPENAI_API_KEY" if provider == "openai" else "GEMINI_API_KEY"
+        placeholder_by_provider = {
+            "anthropic": "ANTHROPIC_API_KEY",
+            "deepinfra": "DEEPINFRA_API_KEY",
+            "gemini": "GEMINI_API_KEY",
+            "groq": "GROQ_API_KEY",
+            "mistral": "MISTRAL_API_KEY",
+            "openai": "OPENAI_API_KEY",
+            "together": "TOGETHER_API_KEY",
+            "xai": "XAI_API_KEY",
+        }
+        placeholder = placeholder_by_provider.get(provider, "GEMINI_API_KEY")
         self.api_key_input.setPlaceholderText(placeholder)
 
 

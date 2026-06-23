@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
 import re
 from io import BytesIO
 from pathlib import Path
@@ -44,12 +45,29 @@ class LLMClient:
         self.save_api_images = save_api_images
         self.api_image_output_dir = api_image_output_dir
         self.prompt_builder = prompt_builder or PromptBuilder()
+        self._anthropic_client = None
         self._openai_client = None
+        self._openai_compatible_client = None
 
+        if self.api_provider == "anthropic" and self.api_key and not self.use_dummy_api:
+            from anthropic import Anthropic
+
+            self._anthropic_client = Anthropic(api_key=self.api_key)
         if self.api_provider == "openai" and self.api_key and not self.use_dummy_api:
             from openai import OpenAI
 
             self._openai_client = OpenAI(api_key=self.api_key)
+        if (
+            self.api_provider in self._openai_compatible_base_urls()
+            and self.api_key
+            and not self.use_dummy_api
+        ):
+            from openai import OpenAI
+
+            self._openai_compatible_client = OpenAI(
+                api_key=self.api_key,
+                base_url=self._openai_compatible_base_urls()[self.api_provider],
+            )
 
     def generate_comments(
         self,
@@ -63,8 +81,20 @@ class LLMClient:
             return self._dummy_response()
 
         try:
+            if self.api_provider == "anthropic":
+                return self._generate_with_anthropic(
+                    frame,
+                    previous_summary,
+                    previous_comments or [],
+                )
             if self.api_provider == "openai":
                 return self._generate_with_openai(
+                    frame,
+                    previous_summary,
+                    previous_comments or [],
+                )
+            if self.api_provider in self._openai_compatible_base_urls():
+                return self._generate_with_openai_compatible(
                     frame,
                     previous_summary,
                     previous_comments or [],
@@ -270,9 +300,118 @@ class LLMClient:
 
         return self._parse_comment_batch(response.output_text or "")
 
+    def _generate_with_openai_compatible(
+        self,
+        frame: CaptureFrame,
+        previous_summary: str,
+        previous_comments: list[str],
+    ) -> CommentBatch:
+        system_prompt = self.prompt_builder.build_system_prompt()
+        user_prompt = self.prompt_builder.build_user_prompt(
+            frame,
+            previous_summary,
+            previous_comments,
+        )
+        content: list[dict[str, object]] = [
+            {"type": "text", "text": user_prompt}
+        ]
+
+        if self.send_screenshot:
+            image_bytes, mime_type = self._build_api_image(frame)
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{encoded}",
+                    },
+                }
+            )
+        else:
+            print("[api] text-only request: screenshot not sent")
+
+        if self._openai_compatible_client is None:
+            raise RuntimeError(
+                f"{self.api_provider.title()} client is not initialized."
+            )
+
+        response = self._openai_compatible_client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": content},
+            ],
+            max_tokens=self.max_output_tokens,
+            temperature=0.7,
+        )
+
+        message = response.choices[0].message
+        return self._parse_comment_batch(message.content or "")
+
+    def _generate_with_anthropic(
+        self,
+        frame: CaptureFrame,
+        previous_summary: str,
+        previous_comments: list[str],
+    ) -> CommentBatch:
+        system_prompt = self.prompt_builder.build_system_prompt()
+        user_prompt = self.prompt_builder.build_user_prompt(
+            frame,
+            previous_summary,
+            previous_comments,
+        )
+        content: list[dict[str, object]] = [
+            {"type": "text", "text": user_prompt}
+        ]
+
+        if self.send_screenshot:
+            image_bytes, mime_type = self._build_api_image(frame)
+            encoded = base64.b64encode(image_bytes).decode("ascii")
+            content.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": mime_type,
+                        "data": encoded,
+                    },
+                }
+            )
+        else:
+            print("[api] text-only request: screenshot not sent")
+
+        if self._anthropic_client is None:
+            raise RuntimeError("Anthropic client is not initialized.")
+
+        response = self._anthropic_client.messages.create(
+            model=self.model_name,
+            max_tokens=self.max_output_tokens,
+            system=system_prompt,
+            messages=[
+                {
+                    "role": "user",
+                    "content": content,
+                }
+            ],
+        )
+
+        text_parts = [
+            block.text
+            for block in response.content
+            if getattr(block, "type", "") == "text"
+        ]
+        return self._parse_comment_batch("".join(text_parts))
+
     def _build_api_image(self, frame: CaptureFrame) -> tuple[bytes, str]:
         if self.image_max_dimension <= 0:
-            return frame.image_path.read_bytes(), "image/png"
+            mime_type = mimetypes.guess_type(frame.image_path.name)[0] or "image/png"
+            image_bytes = frame.image_path.read_bytes()
+            print(
+                "[api] using original image for request: "
+                f"{frame.image_path.name} "
+                f"({round(len(image_bytes) / 1024, 1)} KB)"
+            )
+            return image_bytes, mime_type
 
         from PIL import Image
 
@@ -308,6 +447,16 @@ class LLMClient:
             f"({round(len(image_bytes) / 1024, 1)} KB)"
         )
         return image_bytes, "image/jpeg"
+
+    @staticmethod
+    def _openai_compatible_base_urls() -> dict[str, str]:
+        return {
+            "deepinfra": "https://api.deepinfra.com/v1/openai",
+            "groq": "https://api.groq.com/openai/v1",
+            "mistral": "https://api.mistral.ai/v1",
+            "together": "https://api.together.xyz/v1",
+            "xai": "https://api.x.ai/v1",
+        }
 
     def _parse_comment_batch(self, text: str) -> CommentBatch:
         cleaned = self._strip_code_fence(text).strip()

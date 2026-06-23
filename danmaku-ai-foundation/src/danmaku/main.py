@@ -7,6 +7,7 @@ import time
 import threading
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
 
 from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import QApplication
@@ -689,6 +690,8 @@ class DanmakuApp:
 
 
 def main() -> None:
+    load_dotenv()
+    
     app = QApplication(sys.argv)
     settings = load_settings_from_env()
     danmaku_app = DanmakuApp(settings=settings)
