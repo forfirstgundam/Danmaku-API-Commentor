@@ -335,6 +335,14 @@ class LLMClient:
                 f"{self.api_provider.title()} client is not initialized."
             )
 
+        completion_options: dict[str, object] = {}
+        if self.api_provider == "groq":
+            completion_options["response_format"] = {"type": "json_object"}
+            if self.model_name == "qwen/qwen3.6-27b":
+                completion_options["extra_body"] = {
+                    "reasoning_effort": "none",
+                }
+
         response = self._openai_compatible_client.chat.completions.create(
             model=self.model_name,
             messages=[
@@ -343,6 +351,7 @@ class LLMClient:
             ],
             max_tokens=self.max_output_tokens,
             temperature=0.7,
+            **completion_options,
         )
 
         message = response.choices[0].message
@@ -460,6 +469,11 @@ class LLMClient:
 
     def _parse_comment_batch(self, text: str) -> CommentBatch:
         cleaned = self._strip_code_fence(text).strip()
+        if not cleaned:
+            return CommentBatch.error(
+                f"{self.api_provider.title()} returned an empty response."
+            )
+
         data = json.loads(cleaned)
 
         comments = data.get("comments", [])

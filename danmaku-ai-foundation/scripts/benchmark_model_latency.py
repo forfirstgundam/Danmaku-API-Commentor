@@ -4,6 +4,8 @@ import argparse
 import csv
 import json
 import os
+import re
+import statistics
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -45,30 +47,31 @@ MODEL_PRESETS = {
     ],
     "requested": [
         "deepinfra:Qwen/Qwen2.5-VL-7B-Instruct",
-        "together:Qwen/Qwen2.5-VL-7B-Instruct",
-        "mistral:pixtral-large-latest",
-        "mistral:pixtral-12b-latest",
+        "mistral:ministral-8b-2512",
         "openai:gpt-5.4-nano",
         "openai:gpt-5.4-mini",
         "gemini:gemini-3.5-flash",
-        "gemini:gemini-2.0-flash",
-        "groq:llama-3.2-90b-vision-preview",
-        "groq:llama-3.2-11b-vision-preview",
+        "gemini:gemini-3.1-flash-lite",
+        "groq:meta-llama/llama-4-scout-17b-16e-instruct",
+        "groq:qwen/qwen3.6-27b",
         "anthropic:claude-haiku-4-5",
         "xai:grok-3-mini",
     ],
     "current": [
-        "together:Qwen/Qwen3.5-9B",
-        "mistral:mistral-large-2512",
-        "mistral:mistral-small-2506",
+        "mistral:ministral-8b-2512",
         "openai:gpt-5.4-nano",
         "openai:gpt-5.4-mini",
         "gemini:gemini-3.5-flash",
-        "gemini:gemini-2.0-flash",
+        "gemini:gemini-2.5-flash",
         "groq:meta-llama/llama-4-scout-17b-16e-instruct",
         "groq:qwen/qwen3.6-27b",
         "anthropic:claude-haiku-4-5",
         "xai:grok-4.3",
+    ],
+    "presentation": [
+        "gemini:gemini-2.5-flash-lite",
+        "gemini:gemini-3.1-flash-lite",
+        "openai:gpt-5-nano",
     ],
 }
 
@@ -86,6 +89,9 @@ class BenchmarkResult:
     comments_count: int
     long_comments_count: int
     summary_chars: int
+    comments: list[str]
+    long_comments: list[str]
+    summary: str
     error_message: str
 
 
@@ -190,6 +196,9 @@ def run_once(
         comments_count=len(batch.comments),
         long_comments_count=len(batch.long_comments),
         summary_chars=len(batch.summary),
+        comments=batch.comments,
+        long_comments=batch.long_comments,
+        summary=batch.summary,
         error_message=batch.error_message,
     )
 
@@ -200,6 +209,8 @@ def write_outputs(results: list[BenchmarkResult], output_dir: Path) -> None:
     csv_path = output_dir / "latency_results.csv"
     summary_path = output_dir / "latency_summary.csv"
     run_summary_path = output_dir / "run_summary.csv"
+    comments_path = output_dir / "all_comments.csv"
+    comments_by_run_dir = output_dir / "comments_by_run"
 
     with jsonl_path.open("w", encoding="utf-8") as file:
         for result in results:
@@ -210,7 +221,69 @@ def write_outputs(results: list[BenchmarkResult], output_dir: Path) -> None:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         for result in results:
-            writer.writerow(asdict(result))
+            row = asdict(result)
+            row["comments"] = json.dumps(result.comments, ensure_ascii=False)
+            row["long_comments"] = json.dumps(
+                result.long_comments,
+                ensure_ascii=False,
+            )
+            writer.writerow(row)
+
+    comments_by_run_dir.mkdir(parents=True, exist_ok=True)
+    comment_rows: list[dict[str, object]] = []
+    for result_number, result in enumerate(results, start=1):
+        run_comments = [
+            {"comment_type": "short", "comment_index": index, "comment": comment}
+            for index, comment in enumerate(result.comments, start=1)
+        ]
+        run_comments.extend(
+            {
+                "comment_type": "long",
+                "comment_index": index,
+                "comment": comment,
+            }
+            for index, comment in enumerate(result.long_comments, start=1)
+        )
+
+        for comment in run_comments:
+            comment_rows.append(
+                {
+                    "logged_at": result.logged_at,
+                    "provider": result.provider,
+                    "model": result.model,
+                    "image_path": result.image_path,
+                    "run_index": result.run_index,
+                    **comment,
+                    "summary": result.summary,
+                }
+            )
+
+        safe_provider = re.sub(r"[^A-Za-z0-9_.-]+", "_", result.provider)
+        safe_model = re.sub(r"[^A-Za-z0-9_.-]+", "_", result.model)
+        run_path = comments_by_run_dir / (
+            f"{result_number:04d}_{safe_provider}_{safe_model}_"
+            f"repeat_{result.run_index}.json"
+        )
+        run_path.write_text(
+            json.dumps(asdict(result), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    with comments_path.open("w", newline="", encoding="utf-8-sig") as file:
+        comment_fieldnames = [
+            "logged_at",
+            "provider",
+            "model",
+            "image_path",
+            "run_index",
+            "comment_type",
+            "comment_index",
+            "comment",
+            "summary",
+        ]
+        writer = csv.DictWriter(file, fieldnames=comment_fieldnames)
+        writer.writeheader()
+        writer.writerows(comment_rows)
 
     grouped: dict[tuple[str, str], list[BenchmarkResult]] = {}
     for result in results:
@@ -219,19 +292,28 @@ def write_outputs(results: list[BenchmarkResult], output_dir: Path) -> None:
     summary_rows: list[dict[str, object]] = []
     for (provider, model), model_results in grouped.items():
         successful = [result for result in model_results if result.ok]
-        latencies = [
-            result.latency_sec
-            for result in successful
-        ] or [result.latency_sec for result in model_results]
+        latencies = sorted(result.latency_sec for result in successful)
+        attempts = len(model_results)
+        successes = len(successful)
         summary_rows.append(
             {
                 "provider": provider,
                 "model": model,
-                "attempts": len(model_results),
-                "successes": len(successful),
-                "avg_latency_sec": round(sum(latencies) / len(latencies), 3),
-                "min_latency_sec": min(latencies),
-                "max_latency_sec": max(latencies),
+                "attempts": attempts,
+                "successes": successes,
+                "failures": attempts - successes,
+                "success_rate": round(successes / attempts, 3),
+                "avg_latency_sec": (
+                    round(statistics.fmean(latencies), 3) if latencies else ""
+                ),
+                "median_latency_sec": (
+                    round(statistics.median(latencies), 3) if latencies else ""
+                ),
+                "p90_latency_sec": (
+                    round(percentile(latencies, 0.9), 3) if latencies else ""
+                ),
+                "min_latency_sec": min(latencies) if latencies else "",
+                "max_latency_sec": max(latencies) if latencies else "",
             }
         )
 
@@ -241,7 +323,11 @@ def write_outputs(results: list[BenchmarkResult], output_dir: Path) -> None:
             "model",
             "attempts",
             "successes",
+            "failures",
+            "success_rate",
             "avg_latency_sec",
+            "median_latency_sec",
+            "p90_latency_sec",
             "min_latency_sec",
             "max_latency_sec",
         ]
@@ -258,6 +344,23 @@ def write_outputs(results: list[BenchmarkResult], output_dir: Path) -> None:
     print(f"[done] wrote {csv_path}")
     print(f"[done] wrote {summary_path}")
     print(f"[done] wrote {run_summary_path}")
+    print(f"[done] wrote {comments_path}")
+    print(f"[done] wrote {comments_by_run_dir}")
+
+
+def percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        raise ValueError("percentile requires at least one value")
+    if len(values) == 1:
+        return values[0]
+
+    position = (len(values) - 1) * fraction
+    lower_index = int(position)
+    upper_index = min(lower_index + 1, len(values) - 1)
+    weight = position - lower_index
+    return values[lower_index] + (
+        values[upper_index] - values[lower_index]
+    ) * weight
 
 
 def build_parser() -> argparse.ArgumentParser:
