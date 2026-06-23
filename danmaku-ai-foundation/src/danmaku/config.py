@@ -48,6 +48,18 @@ def load_settings_from_env() -> AppSettings:
         "DANMAKU_USE_STREAMING_API", "true").strip().lower()
     use_multi_frame_raw = os.getenv(
         "DANMAKU_USE_MULTI_FRAME", "true").strip().lower()
+    api_image_max_dimension = int(
+        os.getenv("API_IMAGE_MAX_DIMENSION", "768")
+    )
+    configured_capture_format = os.getenv(
+        "SAMPLE_CAPTURE_FORMAT",
+        "JPEG",
+    ).strip().upper()
+    sample_capture_format = (
+        "PNG"
+        if api_image_max_dimension <= 0 or configured_capture_format == "PNG"
+        else "JPEG"
+    )
 
     return AppSettings(
         capture_interval_seconds=int(
@@ -58,6 +70,7 @@ def load_settings_from_env() -> AppSettings:
             os.getenv("FRAME_SAMPLE_INTERVAL_SECONDS", "1")),
         frame_buffer_size=int(os.getenv("FRAME_BUFFER_SIZE", "6")),
         frames_per_request=int(os.getenv("FRAMES_PER_REQUEST", "4")),
+        sample_capture_format=sample_capture_format,
         sample_capture_jpeg_quality=int(
             os.getenv("SAMPLE_CAPTURE_JPEG_QUALITY", "82")),
         api_provider=api_provider,
@@ -65,7 +78,7 @@ def load_settings_from_env() -> AppSettings:
         fallback_model_name=os.getenv("FALLBACK_MODEL_NAME", "gemini-3.5-flash"),
         api_key=api_key,
         send_screenshot_to_api=send_screenshot_raw in {"1", "true", "yes", "y"},
-        api_image_max_dimension=int(os.getenv("API_IMAGE_MAX_DIMENSION", "768")),
+        api_image_max_dimension=api_image_max_dimension,
         api_image_jpeg_quality=int(os.getenv("API_IMAGE_JPEG_QUALITY", "72")),
         history_image_max_dimension=int(
             os.getenv("HISTORY_IMAGE_MAX_DIMENSION", "384")),

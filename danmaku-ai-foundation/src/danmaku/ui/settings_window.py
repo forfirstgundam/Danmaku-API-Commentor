@@ -454,6 +454,28 @@ class SettingsWindow(QWidget):
         image_group = QGroupBox("API Image Compression")
         image_form = self._new_form()
 
+        self.capture_format_input = QComboBox()
+        self.capture_format_input.addItem("JPEG", "JPEG")
+        self.capture_format_input.addItem("PNG", "PNG")
+        capture_format_index = self.capture_format_input.findData(
+            self.settings.sample_capture_format.upper()
+        )
+        self.capture_format_input.setCurrentIndex(
+            max(0, capture_format_index)
+        )
+
+        self.capture_quality_input = QSpinBox()
+        self.capture_quality_input.setRange(20, 95)
+        self.capture_quality_input.setSingleStep(5)
+        self.capture_quality_input.setSuffix(" quality")
+        self.capture_quality_input.setValue(
+            self.settings.sample_capture_jpeg_quality
+        )
+        self.capture_format_input.currentIndexChanged.connect(
+            self._update_capture_quality_enabled
+        )
+        self._update_capture_quality_enabled()
+
         self.api_image_size_input = QSpinBox()
         self.api_image_size_input.setRange(0, 1920)
         self.api_image_size_input.setSingleStep(64)
@@ -473,7 +495,13 @@ class SettingsWindow(QWidget):
         self.api_image_size_input.valueChanged.connect(
             self._update_api_image_quality_enabled
         )
+        self.api_image_size_input.valueChanged.connect(
+            self._sync_original_capture_format
+        )
         self._update_api_image_quality_enabled(
+            self.api_image_size_input.value()
+        )
+        self._sync_original_capture_format(
             self.api_image_size_input.value()
         )
 
@@ -493,6 +521,8 @@ class SettingsWindow(QWidget):
             self.settings.history_image_jpeg_quality
         )
 
+        image_form.addRow("Capture format", self.capture_format_input)
+        image_form.addRow("Capture JPEG", self.capture_quality_input)
         image_form.addRow("Current frame max size", self.api_image_size_input)
         image_form.addRow(
             "Current frame JPEG",
@@ -515,6 +545,19 @@ class SettingsWindow(QWidget):
 
     def _update_api_image_quality_enabled(self, max_dimension: int) -> None:
         self.api_image_quality_input.setEnabled(max_dimension > 0)
+
+    def _sync_original_capture_format(self, max_dimension: int) -> None:
+        if max_dimension <= 0:
+            png_index = self.capture_format_input.findData("PNG")
+            self.capture_format_input.setCurrentIndex(png_index)
+        self.capture_format_input.setEnabled(max_dimension > 0)
+        self._update_capture_quality_enabled()
+
+    def _update_capture_quality_enabled(self) -> None:
+        self.capture_quality_input.setEnabled(
+            self.capture_format_input.isEnabled()
+            and self.capture_format_input.currentData() == "JPEG"
+        )
 
     def _build_overlay_tab(self) -> QWidget:
         tab = QWidget()
@@ -726,6 +769,14 @@ class SettingsWindow(QWidget):
         )
         self.settings.frames_per_request = (
             self.frames_per_request_input.value()
+        )
+        self.settings.sample_capture_format = (
+            "PNG"
+            if self.api_image_size_input.value() <= 0
+            else self.capture_format_input.currentData()
+        )
+        self.settings.sample_capture_jpeg_quality = (
+            self.capture_quality_input.value()
         )
         self.settings.frame_buffer_size = max(
             self.settings.frame_buffer_size,

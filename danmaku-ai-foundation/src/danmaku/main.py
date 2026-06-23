@@ -88,7 +88,7 @@ class DanmakuApp:
             output_dir=self.settings.capture_output_dir,
             target_window_title=self.settings.target_window_title,
             target_window_handle=self.settings.target_window_handle,
-            image_format="JPEG",
+            image_format=self.settings.sample_capture_format,
             jpeg_quality=self.settings.sample_capture_jpeg_quality,
         )
 
@@ -145,7 +145,7 @@ class DanmakuApp:
             output_dir=self.settings.capture_output_dir,
             target_window_title=self.settings.target_window_title,
             target_window_handle=self.settings.target_window_handle,
-            image_format="JPEG",
+            image_format=self.settings.sample_capture_format,
             jpeg_quality=self.settings.sample_capture_jpeg_quality,
         )
         self.llm_client = self._build_llm_client()
@@ -169,6 +169,10 @@ class DanmakuApp:
         print(
             "[app] api_image_max_dimension="
             f"{self.settings.api_image_max_dimension}"
+        )
+        print(
+            "[app] sample_capture_format="
+            f"{self.settings.sample_capture_format}"
         )
         print(
             "[app] api_image_jpeg_quality="
@@ -1123,6 +1127,12 @@ class DanmakuApp:
             ),
             "api_image_jpeg_quality": (
                 self.settings.api_image_jpeg_quality
+            ),
+            "sample_capture_format": (
+                self.settings.sample_capture_format
+            ),
+            "sample_capture_jpeg_quality": (
+                self.settings.sample_capture_jpeg_quality
             ),
             "use_multi_frame_context": (
                 self.settings.use_multi_frame_context

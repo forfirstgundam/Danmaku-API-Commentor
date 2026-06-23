@@ -105,6 +105,7 @@ class AppSettings:
     frame_sample_interval_seconds: int = 1
     frame_buffer_size: int = 6
     frames_per_request: int = 4
+    sample_capture_format: str = "JPEG"
     sample_capture_jpeg_quality: int = 82
     api_provider: str = "gemini"
     model_name: str = "gemini-2.5-flash-lite"
