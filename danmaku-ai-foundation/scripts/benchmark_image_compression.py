@@ -56,6 +56,10 @@ class CompressionResult:
     request_size_ratio: float
     model: str
     latency_sec: float
+    image_preparation_sec: float
+    api_duration_sec: float
+    response_parsing_sec: float
+    end_to_end_sec: float
     first_attempt_sec: float
     retry_used: bool
     retry_duration_sec: float | None
@@ -175,6 +179,7 @@ def generate_frame(
         on_comment=None,
     )
     first_attempt_sec = round(time.perf_counter() - first_started, 3)
+    timing_totals = dict(client.last_call_metrics)
 
     retry_used = False
     retry_duration_sec: float | None = None
@@ -189,6 +194,8 @@ def generate_frame(
             on_comment=None,
         )
         retry_duration_sec = round(time.perf_counter() - retry_started, 3)
+        for name, value in client.last_call_metrics.items():
+            timing_totals[name] = timing_totals.get(name, 0.0) + value
 
     latency_sec = round(time.perf_counter() - total_started, 3)
     scene_changed = context.apply_batch(batch)
@@ -210,6 +217,22 @@ def generate_frame(
         request_size_ratio=round(request_bytes / source_bytes, 4),
         model=model,
         latency_sec=latency_sec,
+        image_preparation_sec=round(
+            timing_totals.get("image_preparation_sec", 0.0),
+            6,
+        ),
+        api_duration_sec=round(
+            timing_totals.get("api_duration_sec", 0.0),
+            6,
+        ),
+        response_parsing_sec=round(
+            timing_totals.get("response_parsing_sec", 0.0),
+            6,
+        ),
+        end_to_end_sec=round(
+            timing_totals.get("end_to_end_sec", latency_sec),
+            6,
+        ),
         first_attempt_sec=first_attempt_sec,
         retry_used=retry_used,
         retry_duration_sec=retry_duration_sec,
@@ -242,7 +265,10 @@ def write_variant_log(
             "api_max_output_tokens": max_output_tokens,
             "use_streaming_api": False,
             "timing": {
-                "api_duration_sec": result.latency_sec,
+                "image_preparation_sec": result.image_preparation_sec,
+                "api_duration_sec": result.api_duration_sec,
+                "response_parsing_sec": result.response_parsing_sec,
+                "end_to_end_sec": result.end_to_end_sec,
                 "first_attempt_sec": result.first_attempt_sec,
                 "retry_used": result.retry_used,
                 "retry_duration_sec": result.retry_duration_sec,
@@ -305,6 +331,9 @@ def write_outputs(
                     "comment": comment,
                     "summary": result.summary,
                     "latency_sec": result.latency_sec,
+                    "image_preparation_sec": result.image_preparation_sec,
+                    "api_duration_sec": result.api_duration_sec,
+                    "end_to_end_sec": result.end_to_end_sec,
                     "request_bytes": result.request_bytes,
                 }
             )
@@ -318,6 +347,9 @@ def write_outputs(
         "comment",
         "summary",
         "latency_sec",
+        "image_preparation_sec",
+        "api_duration_sec",
+        "end_to_end_sec",
         "request_bytes",
     ]
     with comments_path.open("w", newline="", encoding="utf-8-sig") as file:
@@ -366,7 +398,12 @@ def write_outputs(
                 elif not result.ok:
                     row[variant] = f"ERROR\n{result.error_message}"
                 else:
-                    sections = []
+                    sections = [
+                        "TIMING\n"
+                        f"image preparation: {result.image_preparation_sec}s\n"
+                        f"API duration: {result.api_duration_sec}s\n"
+                        f"end-to-end: {result.end_to_end_sec}s"
+                    ]
                     if result.comments:
                         sections.append(
                             "COMMENTS\n"
@@ -427,6 +464,42 @@ def write_outputs(
                 ),
                 "min_latency_sec": min(latencies) if latencies else "",
                 "max_latency_sec": max(latencies) if latencies else "",
+                "avg_image_preparation_sec": round(
+                    statistics.fmean(
+                        result.image_preparation_sec for result in successful
+                    ),
+                    6,
+                ) if successful else "",
+                "median_image_preparation_sec": round(
+                    statistics.median(
+                        result.image_preparation_sec for result in successful
+                    ),
+                    6,
+                ) if successful else "",
+                "avg_api_duration_sec": round(
+                    statistics.fmean(
+                        result.api_duration_sec for result in successful
+                    ),
+                    3,
+                ) if successful else "",
+                "median_api_duration_sec": round(
+                    statistics.median(
+                        result.api_duration_sec for result in successful
+                    ),
+                    3,
+                ) if successful else "",
+                "avg_end_to_end_sec": round(
+                    statistics.fmean(
+                        result.end_to_end_sec for result in successful
+                    ),
+                    3,
+                ) if successful else "",
+                "median_end_to_end_sec": round(
+                    statistics.median(
+                        result.end_to_end_sec for result in successful
+                    ),
+                    3,
+                ) if successful else "",
                 "avg_source_kb": round(
                     statistics.fmean(source_sizes) / 1024,
                     1,
@@ -584,7 +657,9 @@ def main() -> int:
             )
             status = "ok" if result.ok else "error"
             print(
-                f"[result] {status} {result.latency_sec}s "
+                f"[result] {status} prep={result.image_preparation_sec}s "
+                f"api={result.api_duration_sec}s "
+                f"e2e={result.end_to_end_sec}s "
                 f"request={round(result.request_bytes / 1024, 1)}KB "
                 f"comments={len(result.comments) + len(result.long_comments)}"
             )

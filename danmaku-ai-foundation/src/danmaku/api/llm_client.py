@@ -4,6 +4,7 @@ import base64
 import json
 import mimetypes
 import re
+import time
 from io import BytesIO
 from pathlib import Path
 from typing import Callable
@@ -48,6 +49,7 @@ class LLMClient:
         self._anthropic_client = None
         self._openai_client = None
         self._openai_compatible_client = None
+        self.last_call_metrics: dict[str, float] = {}
 
         if self.api_provider == "anthropic" and self.api_key and not self.use_dummy_api:
             from anthropic import Anthropic
@@ -80,6 +82,13 @@ class LLMClient:
         if self.use_dummy_api or not self.api_key:
             return self._dummy_response()
 
+        call_started = time.perf_counter()
+        self.last_call_metrics = {
+            "image_preparation_sec": 0.0,
+            "api_duration_sec": 0.0,
+            "response_parsing_sec": 0.0,
+            "end_to_end_sec": 0.0,
+        }
         try:
             if self.api_provider == "anthropic":
                 return self._generate_with_anthropic(
@@ -115,6 +124,11 @@ class LLMClient:
             message = f"{self.api_provider.title()} call failed: {exc}"
             print(f"[api] {message}")
             return CommentBatch.error(message)
+        finally:
+            self.last_call_metrics["end_to_end_sec"] = round(
+                time.perf_counter() - call_started,
+                6,
+            )
 
     def _generate_with_gemini(
         self,
@@ -137,7 +151,9 @@ class LLMClient:
         contents: list[object] = [user_prompt]
 
         if self.send_screenshot:
+            image_started = time.perf_counter()
             image_bytes, mime_type = self._build_api_image(frame)
+            self._record_duration("image_preparation_sec", image_started)
             contents.append(
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
             )
@@ -152,18 +168,25 @@ class LLMClient:
         elif self.model_name.startswith("gemini-3"):
             thinking_config = types.ThinkingConfig(thinking_level="minimal")
 
-        response = client.models.generate_content(
-            model=self.model_name,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json",
-                max_output_tokens=self.max_output_tokens,
-                thinking_config=thinking_config,
-            ),
-        )
+        api_started = time.perf_counter()
+        try:
+            response = client.models.generate_content(
+                model=self.model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    max_output_tokens=self.max_output_tokens,
+                    thinking_config=thinking_config,
+                ),
+            )
+        finally:
+            self._record_duration("api_duration_sec", api_started)
 
-        return self._parse_comment_batch(response.text or "")
+        parsing_started = time.perf_counter()
+        batch = self._parse_comment_batch(response.text or "")
+        self._record_duration("response_parsing_sec", parsing_started)
+        return batch
 
     def _generate_with_gemini_stream(
         self,
@@ -186,7 +209,9 @@ class LLMClient:
         contents: list[object] = [user_prompt]
 
         if self.send_screenshot:
+            image_started = time.perf_counter()
             image_bytes, mime_type = self._build_api_image(frame)
+            self._record_duration("image_preparation_sec", image_started)
             contents.append(
                 types.Part.from_bytes(data=image_bytes, mime_type=mime_type)
             )
@@ -204,31 +229,38 @@ class LLMClient:
         chunks: list[str] = []
         emitted_count = 0
 
-        stream = client.models.generate_content_stream(
-            model=self.model_name,
-            contents=contents,
-            config=types.GenerateContentConfig(
-                system_instruction=system_prompt,
-                response_mime_type="application/json",
-                max_output_tokens=self.max_output_tokens,
-                thinking_config=thinking_config,
-            ),
-        )
+        api_started = time.perf_counter()
+        try:
+            stream = client.models.generate_content_stream(
+                model=self.model_name,
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    response_mime_type="application/json",
+                    max_output_tokens=self.max_output_tokens,
+                    thinking_config=thinking_config,
+                ),
+            )
 
-        for chunk in stream:
-            text = chunk.text or ""
-            if not text:
-                continue
+            for chunk in stream:
+                text = chunk.text or ""
+                if not text:
+                    continue
 
-            chunks.append(text)
-            full_text = "".join(chunks)
-            comments = self._extract_partial_comments(full_text)
+                chunks.append(text)
+                full_text = "".join(chunks)
+                comments = self._extract_partial_comments(full_text)
 
-            for comment in comments[emitted_count:]:
-                on_comment(comment)
-                emitted_count += 1
+                for comment in comments[emitted_count:]:
+                    on_comment(comment)
+                    emitted_count += 1
+        finally:
+            self._record_duration("api_duration_sec", api_started)
 
-        return self._parse_comment_batch("".join(chunks))
+        parsing_started = time.perf_counter()
+        batch = self._parse_comment_batch("".join(chunks))
+        self._record_duration("response_parsing_sec", parsing_started)
+        return batch
 
     def _generate_with_openai(
         self,
@@ -410,6 +442,12 @@ class LLMClient:
             if getattr(block, "type", "") == "text"
         ]
         return self._parse_comment_batch("".join(text_parts))
+
+    def _record_duration(self, name: str, started: float) -> None:
+        self.last_call_metrics[name] = round(
+            time.perf_counter() - started,
+            6,
+        )
 
     def _build_api_image(self, frame: CaptureFrame) -> tuple[bytes, str]:
         if self.image_max_dimension <= 0:
