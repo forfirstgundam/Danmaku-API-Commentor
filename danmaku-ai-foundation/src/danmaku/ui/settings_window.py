@@ -455,9 +455,10 @@ class SettingsWindow(QWidget):
         image_form = self._new_form()
 
         self.api_image_size_input = QSpinBox()
-        self.api_image_size_input.setRange(320, 1920)
+        self.api_image_size_input.setRange(0, 1920)
         self.api_image_size_input.setSingleStep(64)
         self.api_image_size_input.setSuffix(" px")
+        self.api_image_size_input.setSpecialValueText("Original")
         self.api_image_size_input.setValue(
             self.settings.api_image_max_dimension
         )
@@ -468,6 +469,12 @@ class SettingsWindow(QWidget):
         self.api_image_quality_input.setSuffix(" quality")
         self.api_image_quality_input.setValue(
             self.settings.api_image_jpeg_quality
+        )
+        self.api_image_size_input.valueChanged.connect(
+            self._update_api_image_quality_enabled
+        )
+        self._update_api_image_quality_enabled(
+            self.api_image_size_input.value()
         )
 
         self.history_image_size_input = QSpinBox()
@@ -505,6 +512,9 @@ class SettingsWindow(QWidget):
         layout.addWidget(image_group)
         layout.addStretch()
         return tab
+
+    def _update_api_image_quality_enabled(self, max_dimension: int) -> None:
+        self.api_image_quality_input.setEnabled(max_dimension > 0)
 
     def _build_overlay_tab(self) -> QWidget:
         tab = QWidget()
