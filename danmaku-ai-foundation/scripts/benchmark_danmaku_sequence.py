@@ -269,6 +269,7 @@ def write_aggregate_outputs(
 ) -> None:
     results_path = output_dir / "frame_results.csv"
     comments_path = output_dir / "all_comments.csv"
+    comparison_path = output_dir / "comment_comparison.csv"
     quality_path = output_dir / "quality_review.csv"
     summary_path = output_dir / "run_summary.csv"
 
@@ -328,6 +329,53 @@ def write_aggregate_outputs(
         writer = csv.DictWriter(file, fieldnames=comment_fields)
         writer.writeheader()
         writer.writerows(comment_rows)
+
+    model_keys = list(group_results_by_model(results))
+    frame_results: dict[int, dict[tuple[str, str], SequenceResult]] = {}
+    for result in results:
+        frame_results.setdefault(result.frame_index, {})[
+            (result.provider, result.model)
+        ] = result
+
+    comparison_fields = [
+        "frame_index",
+        "image_path",
+        *[f"{provider}:{model}" for provider, model in model_keys],
+    ]
+    with comparison_path.open("w", newline="", encoding="utf-8-sig") as file:
+        writer = csv.DictWriter(file, fieldnames=comparison_fields)
+        writer.writeheader()
+        for frame_index in sorted(frame_results):
+            per_model = frame_results[frame_index]
+            first_result = next(iter(per_model.values()))
+            row: dict[str, object] = {
+                "frame_index": frame_index,
+                "image_path": first_result.image_path,
+            }
+            for provider, model in model_keys:
+                result = per_model.get((provider, model))
+                cell_name = f"{provider}:{model}"
+                if result is None:
+                    row[cell_name] = "NO RESULT"
+                elif not result.ok:
+                    row[cell_name] = f"ERROR\n{result.error_message}"
+                else:
+                    sections = []
+                    if result.comments:
+                        sections.append(
+                            "COMMENTS\n"
+                            + "\n".join(f"- {item}" for item in result.comments)
+                        )
+                    if result.long_comments:
+                        sections.append(
+                            "LONG COMMENTS\n"
+                            + "\n".join(
+                                f"- {item}" for item in result.long_comments
+                            )
+                        )
+                    sections.append(f"SUMMARY\n{result.summary or '(empty)'}")
+                    row[cell_name] = "\n\n".join(sections)
+            writer.writerow(row)
 
     quality_fields = [
         *comment_fields,
@@ -419,8 +467,18 @@ def write_aggregate_outputs(
 
     print(f"[done] wrote {results_path}")
     print(f"[done] wrote {comments_path}")
+    print(f"[done] wrote {comparison_path}")
     print(f"[done] wrote {quality_path}")
     print(f"[done] wrote {summary_path}")
+
+
+def group_results_by_model(
+    results: list[SequenceResult],
+) -> dict[tuple[str, str], list[SequenceResult]]:
+    grouped: dict[tuple[str, str], list[SequenceResult]] = {}
+    for result in results:
+        grouped.setdefault((result.provider, result.model), []).append(result)
+    return grouped
 
 
 def build_parser() -> argparse.ArgumentParser:
