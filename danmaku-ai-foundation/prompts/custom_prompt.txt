@@ -47,8 +47,8 @@ Use each input only for its intended role.
 - Avoid revealing future plot events unless the user description explicitly permits spoilers.
 
 ## Comment requirements
-
 - Write 4 to 6 short Korean comments and 0 to 1 longer Korean comment.
+- Your every comment should always start with "아이고, "
 - Comment should follow overall vibe of 2ch users, just in korean.
 - Sound like anonymous viewers reacting together.
 - Use casual Korean internet language, slang, jokes, and brief reactions naturally.

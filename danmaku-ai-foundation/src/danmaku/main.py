@@ -21,6 +21,7 @@ from danmaku.models import (
 )
 from danmaku.overlay.overlay_window import OverlayWindow
 from danmaku.ui.settings_window import SettingsWindow
+from danmaku.api.prompt_builder import PromptBuilder
 
 
 class AppSignals(QObject):
@@ -254,6 +255,14 @@ class DanmakuApp:
         print("[app] stopped")
 
     def _build_llm_client(self) -> LLMClient:
+        prompt_path = (
+        "prompts/custom_prompt.txt"
+        if self.settings.prompt_mode == "custom"
+        else "prompts/system_prompt.txt"
+    )
+
+        prompt_builder = PromptBuilder(prompt_path)
+
         return LLMClient(
             api_key=self.settings.api_key,
             api_provider=self.settings.api_provider,
@@ -271,6 +280,7 @@ class DanmakuApp:
             max_output_tokens=self.settings.api_max_output_tokens,
             save_api_images=self.settings.save_api_images,
             api_image_output_dir=self.settings.api_image_output_dir,
+            prompt_builder=prompt_builder,
             user_stream_description=(
                 self.settings.user_stream_description
             ),

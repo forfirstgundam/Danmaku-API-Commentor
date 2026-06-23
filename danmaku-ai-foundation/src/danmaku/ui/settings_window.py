@@ -331,6 +331,7 @@ class SettingsWindow(QWidget):
         self.tabs.addTab(self._build_context_tab(), "Context")
         self.tabs.addTab(self._build_capture_tab(), "Capture")
         self.tabs.addTab(self._build_logging_tab(), "Logging")
+        self.tabs.addTab(self._build_prompt_tab(), "Prompt")
         self.tabs.addTab(
             self._make_scrollable(self._build_overlay_tab()),
             "Overlay",
@@ -567,9 +568,8 @@ class SettingsWindow(QWidget):
         )
         self.capture_region_label = QLabel("None")
         self.select_capture_region_button = QPushButton("Select Capture Region")
-        self.select_capture_region_button = QPushButton("Select Capture Region")
         self.select_capture_region_button.clicked.connect(
-        self._on_select_capture_region_clicked
+            self._on_select_capture_region_clicked
 )
 
         timing_form.addRow("Capture mode", self.capture_mode_label)
@@ -792,6 +792,100 @@ class SettingsWindow(QWidget):
         layout.addWidget(group)
         layout.addStretch()
         return tab
+    
+    def _build_prompt_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+
+        group = QGroupBox("Prompt Settings")
+        form = self._new_form()
+
+        self.default_prompt_radio = QRadioButton("Default system prompt")
+        self.custom_prompt_radio = QRadioButton("Custom prompt")
+
+        self.prompt_mode_group = QButtonGroup(self)
+        self.prompt_mode_group.addButton(self.default_prompt_radio)
+        self.prompt_mode_group.addButton(self.custom_prompt_radio)
+
+        self.custom_prompt_input = QTextEdit()
+        self.custom_prompt_input.setMinimumHeight(320)
+        self.custom_prompt_input.setPlainText(self._read_system_prompt())
+
+        self.default_prompt_radio.setChecked(True)
+
+        prompt_mode_row = QHBoxLayout()
+        prompt_mode_row.addWidget(self.default_prompt_radio)
+        prompt_mode_row.addWidget(self.custom_prompt_radio)
+        prompt_mode_row.addStretch()
+
+        self.save_custom_prompt_button = QPushButton("Save custom prompt")
+        self.save_custom_prompt_button.clicked.connect(self._save_custom_prompt)
+
+        self.default_prompt_radio.toggled.connect(
+            self._update_prompt_editor_enabled
+        )
+        self.custom_prompt_radio.toggled.connect(
+            self._update_prompt_editor_enabled
+        )
+        self._update_prompt_editor_enabled()
+
+        form.addRow("Prompt mode", prompt_mode_row)
+        form.addRow("Custom prompt", self.custom_prompt_input)
+        form.addRow("", self.save_custom_prompt_button)
+
+        group.setLayout(form)
+        layout.addWidget(group, 1)
+        return tab
+    
+    def _custom_prompt_path(self) -> Path:
+        return Path.cwd() / "prompts" / "custom_prompt.txt"
+
+    def _system_prompt_path(self) -> Path:
+        return Path.cwd() / "prompts" / "system_prompt.txt"
+
+
+    def _read_system_prompt(self) -> str:
+        path = self._system_prompt_path()
+
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+
+        return ""
+
+    def _read_custom_prompt(self) -> str:
+        path = self._custom_prompt_path()
+        if path.exists():
+            return path.read_text(encoding="utf-8")
+        return ""
+
+
+    def _save_custom_prompt(self) -> None:
+        path = self._custom_prompt_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            self.custom_prompt_input.toPlainText().strip(),
+            encoding="utf-8",
+        )
+
+    def _apply_prompt_selection(self) -> None:
+        if self.custom_prompt_radio.isChecked():
+            self._save_custom_prompt()
+            self.settings.prompt_mode = "custom"
+        else:
+            self.settings.prompt_mode = "default"
+
+
+    def _update_prompt_editor_enabled(self) -> None:
+        if self.custom_prompt_radio.isChecked():
+            self.custom_prompt_input.setPlainText(self._read_custom_prompt())
+        else:
+            self.custom_prompt_input.setPlainText(self._read_system_prompt())
+
+        self.custom_prompt_input.setEnabled(True)
+
+        self.save_custom_prompt_button.setEnabled(
+            self.custom_prompt_radio.isChecked()
+    )
 
     @staticmethod
     def _pixel_spin(minimum: int, maximum: int, value: int) -> QSpinBox:
@@ -936,7 +1030,7 @@ class SettingsWindow(QWidget):
         self.settings.save_api_images = self.save_api_images_checkbox.isChecked()
         self.settings.log_root_dir = Path(self.log_root_input.text().strip() or "logs")
 
-        #self._apply_prompt_selection()
+        self._apply_prompt_selection()
 
     def set_running(self, is_running: bool) -> None:
         self.status_label.setText(
