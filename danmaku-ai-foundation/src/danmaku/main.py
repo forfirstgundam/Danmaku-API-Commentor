@@ -296,7 +296,11 @@ class DanmakuApp:
             f"languages={self.settings.ocr_languages}, "
             f"region={self.settings.ocr_region}, "
             f"interval={self.settings.ocr_capture_interval_ms}ms, "
-            f"min_confidence={self.settings.ocr_min_confidence}"
+            f"min_confidence={self.settings.ocr_min_confidence}, "
+            f"color_mode={self.settings.ocr_subtitle_color_mode}, "
+            f"color={self.settings.ocr_subtitle_color}, "
+            f"tolerance={self.settings.ocr_color_tolerance}, "
+            f"debug_images={self.settings.ocr_save_debug_images}"
         )
         if self.settings.ocr_enabled:
             self.settings_window.set_ocr_status(
@@ -658,9 +662,24 @@ class DanmakuApp:
                 )
                 return
 
-            text, confidence = self.ocr_service.recognize_image(
-                crop,
-                self.settings.ocr_min_confidence,
+            debug_prefix = None
+            if self.settings.ocr_save_debug_images:
+                debug_name = datetime.fromtimestamp(captured_at).strftime(
+                    "ocr_%Y%m%d_%H%M%S_%f"
+                )
+                debug_prefix = (
+                    self.settings.ocr_debug_output_dir / debug_name
+                )
+
+            text, confidence, input_variant = (
+                self.ocr_service.recognize_subtitle_image(
+                    crop,
+                    self.settings.ocr_min_confidence,
+                    color_mode=self.settings.ocr_subtitle_color_mode,
+                    subtitle_color=self.settings.ocr_subtitle_color,
+                    color_tolerance=self.settings.ocr_color_tolerance,
+                    debug_prefix=debug_prefix,
+                )
             )
             self.signals.ocr_ready.emit(
                 {
@@ -673,6 +692,17 @@ class DanmakuApp:
                     ),
                     "capture_duration_sec": capture_duration,
                     "visual_difference": visual_difference,
+                    "input_variant": input_variant,
+                    "debug_raw_image": (
+                        str(debug_prefix) + "_raw.png"
+                        if debug_prefix is not None
+                        else ""
+                    ),
+                    "debug_processed_image": (
+                        str(debug_prefix) + "_processed.png"
+                        if debug_prefix is not None
+                        else ""
+                    ),
                     "signature": signature,
                     "skipped_unchanged": False,
                     "generation": generation,
@@ -723,6 +753,7 @@ class DanmakuApp:
                 f"duration={data.get('duration_sec')}s, "
                 f"capture={data.get('capture_duration_sec')}s, "
                 f"change={float(data.get('visual_difference', 0.0)):.3f}, "
+                f"input={data.get('input_variant', 'unknown')}, "
                 f"new={added}: {text}"
             )
             self.settings_window.set_ocr_status(
@@ -776,6 +807,16 @@ class DanmakuApp:
             "visual_difference": data.get("visual_difference"),
             "duration_sec": data.get("duration_sec"),
             "capture_duration_sec": data.get("capture_duration_sec"),
+            "input_variant": data.get("input_variant"),
+            "subtitle_color_mode": (
+                self.settings.ocr_subtitle_color_mode
+            ),
+            "subtitle_color": self.settings.ocr_subtitle_color,
+            "color_tolerance": self.settings.ocr_color_tolerance,
+            "debug_raw_image": data.get("debug_raw_image", ""),
+            "debug_processed_image": data.get(
+                "debug_processed_image", ""
+            ),
             "error": data.get("error"),
             "fatal": bool(data.get("fatal", False)),
             "ocr_region": self.settings.ocr_region,
@@ -1504,6 +1545,16 @@ class DanmakuApp:
                 self.settings.ocr_capture_interval_ms
             ),
             "ocr_change_threshold": self.settings.ocr_change_threshold,
+            "ocr_subtitle_color_mode": (
+                self.settings.ocr_subtitle_color_mode
+            ),
+            "ocr_subtitle_color": list(
+                self.settings.ocr_subtitle_color
+            ),
+            "ocr_color_tolerance": self.settings.ocr_color_tolerance,
+            "ocr_save_debug_images": (
+                self.settings.ocr_save_debug_images
+            ),
             "timing": metrics or {},
         }
 
@@ -1566,6 +1617,9 @@ class DanmakuApp:
         self.settings.ocr_log_path = (
             self.settings.run_log_dir / "ocr.jsonl"
         )
+        self.settings.ocr_debug_output_dir = (
+            self.settings.run_log_dir / "ocr_debug"
+        )
 
         self.settings.capture_output_dir.mkdir(
             parents=True,
@@ -1574,6 +1628,12 @@ class DanmakuApp:
 
         if self.settings.save_api_images:
             self.settings.api_image_output_dir.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+        if self.settings.ocr_save_debug_images:
+            self.settings.ocr_debug_output_dir.mkdir(
                 parents=True,
                 exist_ok=True,
             )
@@ -1593,6 +1653,11 @@ class DanmakuApp:
             f"{self.settings.comment_log_path.resolve()}"
         )
         print(f"[log] ocr={self.settings.ocr_log_path.resolve()}")
+        if self.settings.ocr_save_debug_images:
+            print(
+                "[log] ocr_debug="
+                f"{self.settings.ocr_debug_output_dir.resolve()}"
+            )
 
     def _save_session_context(self) -> None:
         run_dir = self.settings.run_log_dir

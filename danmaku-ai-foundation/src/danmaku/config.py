@@ -55,6 +55,20 @@ def load_settings_from_env() -> AppSettings:
         for item in os.getenv("DANMAKU_OCR_LANGUAGES", "ko,en").split(",")
         if item.strip()
     )
+    try:
+        ocr_subtitle_color = tuple(
+            max(0, min(255, int(part.strip())))
+            for part in os.getenv(
+                "DANMAKU_OCR_SUBTITLE_COLOR", "255,255,255"
+            ).split(",")
+        )
+        if len(ocr_subtitle_color) != 3:
+            raise ValueError
+    except ValueError:
+        ocr_subtitle_color = (255, 255, 255)
+    save_ocr_debug_raw = os.getenv(
+        "DANMAKU_OCR_SAVE_DEBUG_IMAGES", "false"
+    ).strip().lower()
 
     return AppSettings(
         capture_interval_seconds=int(
@@ -88,4 +102,14 @@ def load_settings_from_env() -> AppSettings:
         ocr_capture_interval_ms=int(
             os.getenv("DANMAKU_OCR_INTERVAL_MS", "500")
         ),
+        ocr_subtitle_color_mode=os.getenv(
+            "DANMAKU_OCR_COLOR_MODE", "auto"
+        ).strip().lower(),
+        ocr_subtitle_color=ocr_subtitle_color,
+        ocr_color_tolerance=int(
+            os.getenv("DANMAKU_OCR_COLOR_TOLERANCE", "70")
+        ),
+        ocr_save_debug_images=save_ocr_debug_raw in {
+            "1", "true", "yes", "y"
+        },
     )

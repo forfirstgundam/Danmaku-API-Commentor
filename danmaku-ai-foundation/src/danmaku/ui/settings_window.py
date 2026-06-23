@@ -4,9 +4,11 @@ import threading
 from pathlib import Path
 
 from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QAbstractScrollArea,
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -191,6 +193,7 @@ class SettingsWindow(QWidget):
         super().__init__()
         self.settings = settings
         self._ocr_region = settings.ocr_region
+        self._ocr_subtitle_color = settings.ocr_subtitle_color
         self._ocr_setup_generation = 0
         self._ocr_setup_busy = False
         self._prepared_ocr_service: EasyOcrService | None = None
@@ -535,9 +538,11 @@ class SettingsWindow(QWidget):
         self.ocr_enabled_checkbox.setChecked(self.settings.ocr_enabled)
 
         self.ocr_language_input = QComboBox()
+        self.ocr_language_input.addItem("Korean only", ("ko",))
         self.ocr_language_input.addItem("Korean + English", ("ko", "en"))
+        self.ocr_language_input.addItem("Japanese only", ("ja",))
         self.ocr_language_input.addItem("Japanese + English", ("ja", "en"))
-        self.ocr_language_input.addItem("English", ("en",))
+        self.ocr_language_input.addItem("English only", ("en",))
         language_index = self.ocr_language_input.findData(
             self.settings.ocr_languages
         )
@@ -557,6 +562,38 @@ class SettingsWindow(QWidget):
         self.ocr_interval_input.setSuffix(" ms")
         self.ocr_interval_input.setValue(
             self.settings.ocr_capture_interval_ms
+        )
+
+        self.ocr_color_mode_input = QComboBox()
+        self.ocr_color_mode_input.addItem("Auto contrast", "auto")
+        self.ocr_color_mode_input.addItem("White subtitles", "white")
+        self.ocr_color_mode_input.addItem("Yellow subtitles", "yellow")
+        self.ocr_color_mode_input.addItem("Custom color", "custom")
+        color_mode_index = self.ocr_color_mode_input.findData(
+            self.settings.ocr_subtitle_color_mode
+        )
+        self.ocr_color_mode_input.setCurrentIndex(
+            max(0, color_mode_index)
+        )
+
+        self.ocr_custom_color_button = QPushButton()
+        self.ocr_custom_color_button.clicked.connect(
+            self._choose_ocr_subtitle_color
+        )
+        self._update_ocr_color_button()
+
+        self.ocr_color_tolerance_input = QSpinBox()
+        self.ocr_color_tolerance_input.setRange(0, 255)
+        self.ocr_color_tolerance_input.setSingleStep(5)
+        self.ocr_color_tolerance_input.setValue(
+            self.settings.ocr_color_tolerance
+        )
+
+        self.ocr_debug_images_checkbox = QCheckBox(
+            "Save raw and processed OCR debug images"
+        )
+        self.ocr_debug_images_checkbox.setChecked(
+            self.settings.ocr_save_debug_images
         )
 
         self.ocr_region_button = QPushButton("Select OCR area")
@@ -580,6 +617,12 @@ class SettingsWindow(QWidget):
         ocr_form.addRow("Language", self.ocr_language_input)
         ocr_form.addRow("Scan interval", self.ocr_interval_input)
         ocr_form.addRow("Minimum confidence", self.ocr_confidence_input)
+        ocr_form.addRow("Subtitle color", self.ocr_color_mode_input)
+        ocr_form.addRow("Custom color", self.ocr_custom_color_button)
+        ocr_form.addRow(
+            "Color tolerance", self.ocr_color_tolerance_input
+        )
+        ocr_form.addRow("", self.ocr_debug_images_checkbox)
         ocr_form.addRow("", self.ocr_region_button)
         ocr_form.addRow("Selected area", self.ocr_region_label)
         ocr_form.addRow("Status", self.ocr_status_label)
@@ -592,6 +635,10 @@ class SettingsWindow(QWidget):
         self.ocr_language_input.currentIndexChanged.connect(
             self._on_ocr_language_changed
         )
+        self.ocr_color_mode_input.currentIndexChanged.connect(
+            self._on_ocr_color_mode_changed
+        )
+        self._on_ocr_color_mode_changed()
 
         layout.addWidget(timing_group)
         layout.addWidget(image_group)
@@ -837,6 +884,16 @@ class SettingsWindow(QWidget):
         self.settings.ocr_capture_interval_ms = (
             self.ocr_interval_input.value()
         )
+        self.settings.ocr_subtitle_color_mode = str(
+            self.ocr_color_mode_input.currentData() or "auto"
+        )
+        self.settings.ocr_subtitle_color = self._ocr_subtitle_color
+        self.settings.ocr_color_tolerance = (
+            self.ocr_color_tolerance_input.value()
+        )
+        self.settings.ocr_save_debug_images = (
+            self.ocr_debug_images_checkbox.isChecked()
+        )
 
         self.settings.font_family = (
             self.font_family_input.text().strip() or "Malgun Gothic"
@@ -970,6 +1027,39 @@ class SettingsWindow(QWidget):
 
     def _warn(self, title: str, message: str) -> None:
         QMessageBox.warning(self, title, message)
+
+    def _on_ocr_color_mode_changed(self) -> None:
+        mode = str(self.ocr_color_mode_input.currentData() or "auto")
+        self.ocr_custom_color_button.setEnabled(mode == "custom")
+        self.ocr_color_tolerance_input.setEnabled(mode != "auto")
+
+    def _choose_ocr_subtitle_color(self) -> None:
+        initial = QColor(*self._ocr_subtitle_color)
+        selected = QColorDialog.getColor(
+            initial,
+            self,
+            "Choose subtitle text color",
+        )
+        if not selected.isValid():
+            return
+        self._ocr_subtitle_color = (
+            selected.red(),
+            selected.green(),
+            selected.blue(),
+        )
+        self._update_ocr_color_button()
+
+    def _update_ocr_color_button(self) -> None:
+        red, green, blue = self._ocr_subtitle_color
+        hex_color = f"#{red:02X}{green:02X}{blue:02X}"
+        brightness = (red * 299 + green * 587 + blue * 114) / 1000
+        text_color = "#111827" if brightness > 150 else "#F9FAFB"
+        self.ocr_custom_color_button.setText(
+            f"{hex_color}  ({red}, {green}, {blue})"
+        )
+        self.ocr_custom_color_button.setStyleSheet(
+            f"background-color: {hex_color}; color: {text_color};"
+        )
 
     def _select_ocr_region(self) -> None:
         handle = int(self.window_selector.currentData() or 0)

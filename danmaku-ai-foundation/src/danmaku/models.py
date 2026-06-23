@@ -137,6 +137,7 @@ class AppSettings:
     api_image_output_dir: Path = Path("logs/current/api_images")
     comment_log_path: Path = Path("logs/current/comments.jsonl")
     ocr_log_path: Path = Path("logs/current/ocr.jsonl")
+    ocr_debug_output_dir: Path = Path("logs/current/ocr_debug")
 
     # Capture settings
     target_window_title: str = ""  # empty means full screen
@@ -150,6 +151,10 @@ class AppSettings:
     ocr_min_confidence: float = 0.30
     ocr_capture_interval_ms: int = 500
     ocr_change_threshold: float = 0.004
+    ocr_subtitle_color_mode: str = "auto"
+    ocr_subtitle_color: tuple[int, int, int] = (255, 255, 255)
+    ocr_color_tolerance: int = 70
+    ocr_save_debug_images: bool = False
 
     # Overlay settings
     font_family: str = "Malgun Gothic"

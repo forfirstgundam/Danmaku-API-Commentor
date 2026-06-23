@@ -87,6 +87,60 @@ class EasyOcrService:
         min_confidence: float,
     ) -> tuple[str, float]:
         """Recognize an already-cropped in-memory PIL image."""
+        return self._recognize_working_image(image, min_confidence)
+
+    def recognize_subtitle_image(
+        self,
+        image,
+        min_confidence: float,
+        color_mode: str = "auto",
+        subtitle_color: tuple[int, int, int] = (255, 255, 255),
+        color_tolerance: int = 70,
+        debug_prefix: Path | None = None,
+    ) -> tuple[str, float, str]:
+        """Recognize subtitles using an enhanced/color-isolated candidate.
+
+        A confident processed result avoids a second OCR pass. Uncertain
+        processed results are compared with the original crop so aggressive
+        color masking cannot silently make recognition worse.
+        """
+        processed = preprocess_subtitle_image(
+            image,
+            color_mode=color_mode,
+            subtitle_color=subtitle_color,
+            color_tolerance=color_tolerance,
+        )
+        if debug_prefix is not None:
+            debug_prefix.parent.mkdir(parents=True, exist_ok=True)
+            image.convert("RGB").save(
+                debug_prefix.with_name(debug_prefix.name + "_raw.png")
+            )
+            processed.save(
+                debug_prefix.with_name(
+                    debug_prefix.name + "_processed.png"
+                )
+            )
+
+        processed_text, processed_confidence = (
+            self._recognize_working_image(processed, min_confidence)
+        )
+        if processed_text and processed_confidence >= 0.60:
+            return processed_text, processed_confidence, "processed"
+
+        original_text, original_confidence = (
+            self._recognize_working_image(image, min_confidence)
+        )
+        if _recognition_score(
+            original_text, original_confidence
+        ) > _recognition_score(processed_text, processed_confidence):
+            return original_text, original_confidence, "original_fallback"
+        return processed_text, processed_confidence, "processed"
+
+    def _recognize_working_image(
+        self,
+        image,
+        min_confidence: float,
+    ) -> tuple[str, float]:
         try:
             import numpy as np
             from PIL import Image
@@ -96,11 +150,20 @@ class EasyOcrService:
             ) from exc
 
         crop = image.convert("RGB")
-        # OCR detection cost grows sharply with large captures. The API
-        # screenshots can remain high-resolution; only the OCR crop needs
-        # this bounded working size.
-        if max(crop.size) > 1280:
-            crop.thumbnail((1280, 1280), Image.Resampling.LANCZOS)
+        # Small subtitle crops benefit from moderate enlargement, while a
+        # ceiling keeps detection cost bounded on full-width/high-DPI video.
+        longest_side = max(crop.size)
+        if longest_side < 900:
+            scale = min(1.75, 1000 / max(1, longest_side))
+            crop = crop.resize(
+                (
+                    max(1, round(crop.width * scale)),
+                    max(1, round(crop.height * scale)),
+                ),
+                Image.Resampling.LANCZOS,
+            )
+        elif longest_side > 1600:
+            crop.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
         pixels = np.asarray(crop)
 
         with self._lock:
@@ -250,6 +313,62 @@ def visual_signature_difference(previous: bytes, current: bytes) -> float:
         abs(before - after)
         for before, after in zip(previous, current)
     ) / (len(current) * 255.0)
+
+
+def preprocess_subtitle_image(
+    image,
+    color_mode: str = "auto",
+    subtitle_color: tuple[int, int, int] = (255, 255, 255),
+    color_tolerance: int = 70,
+):
+    """Return a high-contrast OCR candidate for a subtitle crop."""
+    import numpy as np
+    from PIL import Image, ImageFilter, ImageOps
+
+    rgb = image.convert("RGB")
+    mode = color_mode.strip().lower()
+    targets = {
+        "white": (255, 255, 255),
+        "yellow": (255, 235, 40),
+        "custom": tuple(
+            max(0, min(255, int(value))) for value in subtitle_color
+        ),
+    }
+
+    if mode not in targets:
+        enhanced = ImageOps.autocontrast(rgb.convert("L"), cutoff=1)
+        return enhanced.filter(
+            ImageFilter.UnsharpMask(radius=1.2, percent=180, threshold=2)
+        )
+
+    pixels = np.asarray(rgb, dtype=np.int16)
+    target = np.asarray(targets[mode], dtype=np.int16)
+    tolerance = max(0, min(255, int(color_tolerance)))
+    delta = pixels.astype(np.int32) - target.astype(np.int32)
+    distance = np.sqrt(np.sum(delta * delta, axis=2, dtype=np.int64))
+    mask_array = np.where(distance <= tolerance, 255, 0).astype(
+        np.uint8
+    )
+    coverage = float(np.count_nonzero(mask_array)) / mask_array.size
+
+    # A nearly empty or huge mask usually means the chosen color does not
+    # describe the subtitles (or describes the background). Auto contrast is
+    # safer than handing EasyOCR a blank/solid image in that case.
+    if coverage < 0.0005 or coverage > 0.40:
+        return ImageOps.autocontrast(rgb.convert("L"), cutoff=1)
+
+    mask = Image.fromarray(mask_array, mode="L").filter(
+        ImageFilter.MaxFilter(3)
+    )
+    result = Image.new("L", rgb.size, color=255)
+    result.paste(0, mask=mask)
+    return result
+
+
+def _recognition_score(text: str, confidence: float) -> float:
+    if not text:
+        return 0.0
+    return float(confidence) + min(len(text), 40) * 0.003
 
 
 def clean_ocr_text(text: str) -> str:
