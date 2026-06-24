@@ -7,6 +7,40 @@ from pathlib import Path
 from danmaku.models import AppSettings
 
 
+API_KEY_ENV_BY_PROVIDER = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "deepinfra": "DEEPINFRA_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "together": "TOGETHER_API_KEY",
+    "xai": "XAI_API_KEY",
+}
+
+DEFAULT_MODEL_BY_PROVIDER = {
+    "anthropic": "claude-haiku-4-5",
+    "deepinfra": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "gemini": "gemini-3.1-flash-lite",
+    "groq": "meta-llama/llama-4-scout-17b-16e-instruct",
+    "mistral": "ministral-8b-2512",
+    "openai": "gpt-5.4-mini",
+    "together": "Qwen/Qwen3.5-9B",
+    "xai": "grok-4.3",
+}
+
+
+def api_key_env_for_provider(provider: str) -> str:
+    return API_KEY_ENV_BY_PROVIDER.get(provider, "GEMINI_API_KEY")
+
+
+def default_model_for_provider(provider: str) -> str:
+    return DEFAULT_MODEL_BY_PROVIDER.get(
+        provider,
+        DEFAULT_MODEL_BY_PROVIDER["gemini"],
+    )
+
+
 def resource_path(relative_path: str) -> Path:
     """
     Return an absolute path for bundled files.
@@ -32,13 +66,9 @@ def load_settings_from_env() -> AppSettings:
     Do not hardcode real API keys in the source code.
     """
     api_provider = os.getenv("API_PROVIDER", "gemini").strip().lower()
-    api_key_env = "OPENAI_API_KEY" if api_provider == "openai" else "GEMINI_API_KEY"
+    api_key_env = api_key_env_for_provider(api_provider)
     api_key = os.getenv(api_key_env, "").strip()
-    default_model = (
-        "gpt-5.4-nano"
-        if api_provider == "openai"
-        else "gemini-2.5-flash-lite"
-    )
+    default_model = default_model_for_provider(api_provider)
     use_dummy_raw = os.getenv("DANMAKU_USE_DUMMY_API", "true").strip().lower()
     send_screenshot_raw = os.getenv(
         "DANMAKU_SEND_SCREENSHOT", "true").strip().lower()

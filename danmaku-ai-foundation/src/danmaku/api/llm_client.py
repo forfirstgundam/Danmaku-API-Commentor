@@ -15,7 +15,7 @@ from danmaku.models import CaptureFrame, CommentBatch, SessionProfile
 
 class LLMClient:
     """
-    Gemini API client.
+    Multimodal LLM client for Gemini, OpenAI, Anthropic, and compatible APIs.
 
     By default, this can run in dummy mode so the overlay and capture modules
     can be developed without spending API calls.
@@ -58,12 +58,35 @@ class LLMClient:
         self.last_user_prompt = ""
         self.last_profile_prompt = ""
         self.last_call_metrics: dict[str, float] = {}
+        self._anthropic_client = None
         self._openai_client = None
+        self._openai_compatible_client = None
 
+        if (
+            self.api_provider == "anthropic"
+            and self.api_key
+            and not self.use_dummy_api
+        ):
+            from anthropic import Anthropic
+
+            self._anthropic_client = Anthropic(api_key=self.api_key)
         if self.api_provider == "openai" and self.api_key and not self.use_dummy_api:
             from openai import OpenAI
 
             self._openai_client = OpenAI(api_key=self.api_key)
+        if (
+            self.api_provider in self._openai_compatible_base_urls()
+            and self.api_key
+            and not self.use_dummy_api
+        ):
+            from openai import OpenAI
+
+            self._openai_compatible_client = OpenAI(
+                api_key=self.api_key,
+                base_url=self._openai_compatible_base_urls()[
+                    self.api_provider
+                ],
+            )
 
     def set_session_context(
         self,
@@ -92,6 +115,14 @@ class LLMClient:
             )
             if self.api_provider == "openai":
                 profile = self._interpret_profile_with_openai(
+                    clean_description
+                )
+            elif self.api_provider == "anthropic":
+                profile = self._interpret_profile_with_anthropic(
+                    clean_description
+                )
+            elif self.api_provider in self._openai_compatible_base_urls():
+                profile = self._interpret_profile_with_openai_compatible(
                     clean_description
                 )
             else:
@@ -221,15 +252,73 @@ subtitle_language.
             description,
         )
 
+    def _interpret_profile_with_openai_compatible(
+        self,
+        description: str,
+    ) -> SessionProfile:
+        if self._openai_compatible_client is None:
+            raise RuntimeError(
+                f"{self.api_provider.title()} client is not initialized."
+            )
+
+        options: dict[str, object] = {}
+        if self.api_provider in {"groq", "mistral"}:
+            options["response_format"] = {"type": "json_object"}
+
+        response = self._openai_compatible_client.chat.completions.create(
+            model=self.model_name,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return only the requested JSON object.",
+                },
+                {
+                    "role": "user",
+                    "content": self._session_profile_prompt(description),
+                },
+            ],
+            max_tokens=256,
+            temperature=0,
+            **options,
+        )
+        return self._parse_session_profile(
+            response.choices[0].message.content or "",
+            description,
+        )
+
+    def _interpret_profile_with_anthropic(
+        self,
+        description: str,
+    ) -> SessionProfile:
+        if self._anthropic_client is None:
+            raise RuntimeError("Anthropic client is not initialized.")
+
+        response = self._anthropic_client.messages.create(
+            model=self.model_name,
+            max_tokens=256,
+            temperature=0,
+            system="Return only the requested JSON object.",
+            messages=[
+                {
+                    "role": "user",
+                    "content": self._session_profile_prompt(description),
+                }
+            ],
+        )
+        text = "".join(
+            block.text
+            for block in response.content
+            if getattr(block, "type", "") == "text"
+        )
+        return self._parse_session_profile(text, description)
+
     def _parse_session_profile(
         self,
         text: str,
         description: str,
     ) -> SessionProfile:
         cleaned = self._strip_code_fence(text).strip()
-        data = json.loads(cleaned)
-        if not isinstance(data, dict):
-            raise ValueError("Session profile response was not an object.")
+        data = self._decode_json_object(cleaned)
         return SessionProfile.from_mapping(data, description)
 
     def generate_comments(
@@ -258,8 +347,22 @@ subtitle_language.
             "end_to_end_sec": 0.0,
         }
         try:
+            if self.api_provider == "anthropic":
+                return self._generate_with_anthropic(
+                    frame,
+                    previous_summary,
+                    previous_comments or [],
+                    context_frames or [],
+                )
             if self.api_provider == "openai":
                 return self._generate_with_openai(
+                    frame,
+                    previous_summary,
+                    previous_comments or [],
+                    context_frames or [],
+                )
+            if self.api_provider in self._openai_compatible_base_urls():
+                return self._generate_with_openai_compatible(
                     frame,
                     previous_summary,
                     previous_comments or [],
@@ -454,6 +557,7 @@ subtitle_language.
             {"type": "input_text", "text": user_prompt}
         ]
 
+        image_started = time.perf_counter()
         if self.send_screenshot:
             frames = [*context_frames, frame]
             for index, item in enumerate(frames, start=1):
@@ -475,6 +579,7 @@ subtitle_language.
                 )
         else:
             print("[api] text-only request: screenshot not sent")
+        self._record_duration("image_preparation_sec", image_started)
 
         if self._openai_client is None:
             raise RuntimeError("OpenAI client is not initialized.")
@@ -484,44 +589,216 @@ subtitle_language.
             "gpt-5-nano",
         } else "none"
 
-        response = self._openai_client.responses.create(
-            model=self.model_name,
-            instructions=system_prompt,
-            input=[{"role": "user", "content": content}],
-            reasoning={"effort": reasoning_effort},
-            max_output_tokens=self.max_output_tokens,
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "comment_batch",
-                    "strict": True,
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "comments": {
-                                "type": "array",
-                                "items": {"type": "string"},
+        api_started = time.perf_counter()
+        try:
+            response = self._openai_client.responses.create(
+                model=self.model_name,
+                instructions=system_prompt,
+                input=[{"role": "user", "content": content}],
+                reasoning={"effort": reasoning_effort},
+                max_output_tokens=self.max_output_tokens,
+                text={
+                    "format": {
+                        "type": "json_schema",
+                        "name": "comment_batch",
+                        "strict": True,
+                        "schema": {
+                            "type": "object",
+                            "properties": {
+                                "comments": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "long_comments": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "summary": {"type": "string"},
+                                "current_situation": {"type": "string"},
                             },
-                            "long_comments": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                            },
-                            "summary": {"type": "string"},
-                            "current_situation": {"type": "string"},
+                            "required": [
+                                "comments",
+                                "long_comments",
+                                "summary",
+                                "current_situation",
+                            ],
+                            "additionalProperties": False,
                         },
-                        "required": [
-                            "comments",
-                            "long_comments",
-                            "summary",
-                            "current_situation",
-                        ],
-                        "additionalProperties": False,
-                    },
-                }
-            },
-        )
+                    }
+                },
+            )
+        finally:
+            self._record_duration("api_duration_sec", api_started)
 
-        return self._parse_comment_batch(response.output_text or "")
+        parsing_started = time.perf_counter()
+        batch = self._parse_comment_batch(response.output_text or "")
+        self._record_duration("response_parsing_sec", parsing_started)
+        return batch
+
+    def _generate_with_openai_compatible(
+        self,
+        frame: CaptureFrame,
+        previous_summary: str,
+        previous_comments: list[str],
+        context_frames: list[CaptureFrame],
+    ) -> CommentBatch:
+        system_prompt, user_prompt = self._build_comment_prompts(
+            frame,
+            previous_summary,
+            previous_comments,
+            context_frames,
+        )
+        content: list[dict[str, object]] = [
+            {"type": "text", "text": user_prompt}
+        ]
+
+        image_started = time.perf_counter()
+        if self.send_screenshot:
+            frames = [*context_frames, frame]
+            for index, item in enumerate(frames, start=1):
+                is_current = index == len(frames)
+                content.append(
+                    {
+                        "type": "text",
+                        "text": self._frame_label(
+                            index,
+                            len(frames),
+                            item,
+                            frame,
+                        ),
+                    }
+                )
+                image_bytes, mime_type = self._build_api_image(
+                    item,
+                    is_current=is_current,
+                    frame_index=index,
+                )
+                encoded = base64.b64encode(image_bytes).decode("ascii")
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{encoded}",
+                        },
+                    }
+                )
+        else:
+            print("[api] text-only request: screenshot not sent")
+        self._record_duration("image_preparation_sec", image_started)
+
+        if self._openai_compatible_client is None:
+            raise RuntimeError(
+                f"{self.api_provider.title()} client is not initialized."
+            )
+
+        options: dict[str, object] = {}
+        if self.api_provider in {"groq", "mistral"}:
+            options["response_format"] = {"type": "json_object"}
+        if self.api_provider == "groq":
+            if self.model_name == "qwen/qwen3.6-27b":
+                options["extra_body"] = {"reasoning_effort": "none"}
+
+        api_started = time.perf_counter()
+        try:
+            response = (
+                self._openai_compatible_client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": content},
+                    ],
+                    max_tokens=self.max_output_tokens,
+                    temperature=0.7,
+                    **options,
+                )
+            )
+        finally:
+            self._record_duration("api_duration_sec", api_started)
+
+        parsing_started = time.perf_counter()
+        batch = self._parse_comment_batch(
+            response.choices[0].message.content or ""
+        )
+        self._record_duration("response_parsing_sec", parsing_started)
+        return batch
+
+    def _generate_with_anthropic(
+        self,
+        frame: CaptureFrame,
+        previous_summary: str,
+        previous_comments: list[str],
+        context_frames: list[CaptureFrame],
+    ) -> CommentBatch:
+        system_prompt, user_prompt = self._build_comment_prompts(
+            frame,
+            previous_summary,
+            previous_comments,
+            context_frames,
+        )
+        content: list[dict[str, object]] = [
+            {"type": "text", "text": user_prompt}
+        ]
+
+        image_started = time.perf_counter()
+        if self.send_screenshot:
+            frames = [*context_frames, frame]
+            for index, item in enumerate(frames, start=1):
+                is_current = index == len(frames)
+                content.append(
+                    {
+                        "type": "text",
+                        "text": self._frame_label(
+                            index,
+                            len(frames),
+                            item,
+                            frame,
+                        ),
+                    }
+                )
+                image_bytes, mime_type = self._build_api_image(
+                    item,
+                    is_current=is_current,
+                    frame_index=index,
+                )
+                content.append(
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime_type,
+                            "data": base64.b64encode(image_bytes).decode(
+                                "ascii"
+                            ),
+                        },
+                    }
+                )
+        else:
+            print("[api] text-only request: screenshot not sent")
+        self._record_duration("image_preparation_sec", image_started)
+
+        if self._anthropic_client is None:
+            raise RuntimeError("Anthropic client is not initialized.")
+
+        api_started = time.perf_counter()
+        try:
+            response = self._anthropic_client.messages.create(
+                model=self.model_name,
+                max_tokens=self.max_output_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": content}],
+            )
+        finally:
+            self._record_duration("api_duration_sec", api_started)
+
+        text = "".join(
+            block.text
+            for block in response.content
+            if getattr(block, "type", "") == "text"
+        )
+        parsing_started = time.perf_counter()
+        batch = self._parse_comment_batch(text)
+        self._record_duration("response_parsing_sec", parsing_started)
+        return batch
 
     def _build_gemini_contents(
         self,
@@ -636,7 +913,11 @@ subtitle_language.
 
     def _parse_comment_batch(self, text: str) -> CommentBatch:
         cleaned = self._strip_code_fence(text).strip()
-        data = json.loads(cleaned)
+        if not cleaned:
+            return CommentBatch.error(
+                f"{self.api_provider.title()} returned an empty response."
+            )
+        data = self._decode_json_object(cleaned)
 
         comments = data.get("comments", [])
         long_comments = data.get("long_comments", [])
@@ -708,8 +989,38 @@ subtitle_language.
         return match.group(1) if match else text
 
     @staticmethod
+    def _decode_json_object(text: str) -> dict[str, object]:
+        """Decode JSON even when a provider adds a short preface or fence."""
+        decoder = json.JSONDecoder()
+        for index, character in enumerate(text):
+            if character != "{":
+                continue
+            try:
+                value, _ = decoder.raw_decode(text[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                return value
+
+        preview = " ".join(text.split())[:160]
+        raise ValueError(
+            "Provider returned no JSON object"
+            + (f": {preview}" if preview else ".")
+        )
+
+    @staticmethod
     def _dummy_response() -> CommentBatch:
         return CommentBatch.dummy()
+
+    @staticmethod
+    def _openai_compatible_base_urls() -> dict[str, str]:
+        return {
+            "deepinfra": "https://api.deepinfra.com/v1/openai",
+            "groq": "https://api.groq.com/openai/v1",
+            "mistral": "https://api.mistral.ai/v1",
+            "together": "https://api.together.xyz/v1",
+            "xai": "https://api.x.ai/v1",
+        }
 
 
 def main() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from PyQt5.QtCore import pyqtSignal
@@ -23,6 +24,11 @@ from PyQt5.QtWidgets import (
 )
 
 from danmaku.capture.capture_service import list_windows
+from danmaku.config import (
+    API_KEY_ENV_BY_PROVIDER,
+    api_key_env_for_provider,
+    default_model_for_provider,
+)
 from danmaku.models import AppSettings, SessionProfile
 
 
@@ -246,13 +252,30 @@ class SettingsWindow(QWidget):
         form = self._new_form()
 
         self.provider_input = QComboBox()
-        self.provider_input.addItem("Gemini", "gemini")
-        self.provider_input.addItem("OpenAI", "openai")
+        for label, provider in (
+            ("Gemini", "gemini"),
+            ("OpenAI", "openai"),
+            ("Anthropic", "anthropic"),
+            ("DeepInfra", "deepinfra"),
+            ("Together AI", "together"),
+            ("Mistral", "mistral"),
+            ("Groq", "groq"),
+            ("xAI", "xai"),
+        ):
+            self.provider_input.addItem(label, provider)
         provider_index = self.provider_input.findData(
             self.settings.api_provider
         )
         self.provider_input.setCurrentIndex(max(0, provider_index))
 
+        self._api_keys_by_provider = {
+            provider: os.getenv(env_name, "").strip()
+            for provider, env_name in API_KEY_ENV_BY_PROVIDER.items()
+        }
+        self._api_keys_by_provider[self.settings.api_provider] = (
+            self.settings.api_key
+        )
+        self._last_api_provider = self.settings.api_provider
         self.api_key_input = QLineEdit(self.settings.api_key)
         self.api_key_input.setEchoMode(QLineEdit.Password)
 
@@ -303,7 +326,7 @@ class SettingsWindow(QWidget):
         layout.addStretch()
 
         self.provider_input.currentIndexChanged.connect(
-            self._update_api_key_placeholder
+            self._on_provider_changed
         )
         self._update_api_key_placeholder()
         return tab
@@ -968,12 +991,29 @@ class SettingsWindow(QWidget):
 
     def _update_api_key_placeholder(self) -> None:
         provider = self.provider_input.currentData()
-        placeholder = (
-            "OPENAI_API_KEY"
-            if provider == "openai"
-            else "GEMINI_API_KEY"
+        self.api_key_input.setPlaceholderText(
+            api_key_env_for_provider(provider)
         )
-        self.api_key_input.setPlaceholderText(placeholder)
+
+    def _on_provider_changed(self) -> None:
+        previous_provider = self._last_api_provider
+        self._api_keys_by_provider[previous_provider] = (
+            self.api_key_input.text().strip()
+        )
+
+        provider = self.provider_input.currentData()
+        previous_default = default_model_for_provider(previous_provider)
+        if (
+            not self.model_input.text().strip()
+            or self.model_input.text().strip() == previous_default
+        ):
+            self.model_input.setText(default_model_for_provider(provider))
+
+        self.api_key_input.setText(
+            self._api_keys_by_provider.get(provider, "")
+        )
+        self._last_api_provider = provider
+        self._update_api_key_placeholder()
 
 
 def main() -> None:

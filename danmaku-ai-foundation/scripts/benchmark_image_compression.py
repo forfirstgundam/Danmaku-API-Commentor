@@ -620,7 +620,7 @@ def main() -> int:
         f"max_output_tokens={args.max_output_tokens}"
     )
 
-    for max_dimension in dimensions:
+    for variant_index, max_dimension in enumerate(dimensions, start=1):
         variant = variant_name(max_dimension)
         client = build_client(
             args.model,
@@ -633,11 +633,15 @@ def main() -> int:
 
         context = ModelContext()
         variant_dir = output_dir / "variants" / variant
-        print(f"[variant] starting {variant}")
+        print(
+            f"[variant] starting {variant_index}/{len(dimensions)} "
+            f"{variant}"
+        )
 
         for frame_index, image_path in enumerate(images, start=1):
             print(
-                f"[run] {variant} frame {frame_index}/{len(images)} "
+                f"[run] variant {variant_index}/{len(dimensions)} "
+                f"{variant} frame {frame_index}/{len(images)} "
                 f"{image_path.name}"
             )
             result = generate_frame(
@@ -664,7 +668,10 @@ def main() -> int:
                 f"comments={len(result.comments) + len(result.long_comments)}"
             )
 
-        print(f"[variant] finished {variant}")
+        print(
+            f"[variant] finished {variant_index}/{len(dimensions)} "
+            f"{variant}"
+        )
 
     write_outputs(
         results,

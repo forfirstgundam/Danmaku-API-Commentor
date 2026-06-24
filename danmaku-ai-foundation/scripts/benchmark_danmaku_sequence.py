@@ -543,7 +543,10 @@ def main() -> int:
     print("[start] streaming=off image_compression=off")
     print(f"[start] max_output_tokens={args.max_output_tokens}")
 
-    for provider, model in model_specs:
+    for model_index, (provider, model) in enumerate(
+        model_specs,
+        start=1,
+    ):
         client = build_client(provider, model, args.max_output_tokens)
         if client is None:
             continue
@@ -552,11 +555,15 @@ def main() -> int:
         model_dir = output_dir / "models" / (
             f"{safe_name(provider)}__{safe_name(model)}"
         )
-        print(f"[model] starting {provider}:{model}")
+        print(
+            f"[model] starting {model_index}/{len(model_specs)} "
+            f"{provider}:{model}"
+        )
 
         for frame_index, image_path in enumerate(images, start=1):
             print(
-                f"[run] {provider}:{model} "
+                f"[run] model {model_index}/{len(model_specs)} "
+                f"{provider}:{model} "
                 f"frame {frame_index}/{len(images)} {image_path.name}"
             )
             result = generate_frame(
@@ -579,7 +586,10 @@ def main() -> int:
                 f"comments={len(result.comments) + len(result.long_comments)}"
             )
 
-        print(f"[model] finished {provider}:{model}")
+        print(
+            f"[model] finished {model_index}/{len(model_specs)} "
+            f"{provider}:{model}"
+        )
 
     if not results:
         print("[done] no results; check API keys and image paths")
