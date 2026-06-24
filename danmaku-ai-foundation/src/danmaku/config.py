@@ -29,6 +29,17 @@ DEFAULT_MODEL_BY_PROVIDER = {
     "xai": "grok-4.3",
 }
 
+DEFAULT_FALLBACK_MODEL_BY_PROVIDER = {
+    "anthropic": "",
+    "deepinfra": "",
+    "gemini": "gemini-3.5-flash",
+    "groq": "qwen/qwen3.6-27b",
+    "mistral": "",
+    "openai": "gpt-5.4-nano",
+    "together": "",
+    "xai": "",
+}
+
 
 def api_key_env_for_provider(provider: str) -> str:
     return API_KEY_ENV_BY_PROVIDER.get(provider, "GEMINI_API_KEY")
@@ -39,6 +50,10 @@ def default_model_for_provider(provider: str) -> str:
         provider,
         DEFAULT_MODEL_BY_PROVIDER["gemini"],
     )
+
+
+def default_fallback_model_for_provider(provider: str) -> str:
+    return DEFAULT_FALLBACK_MODEL_BY_PROVIDER.get(provider, "")
 
 
 def resource_path(relative_path: str) -> Path:
@@ -69,6 +84,9 @@ def load_settings_from_env() -> AppSettings:
     api_key_env = api_key_env_for_provider(api_provider)
     api_key = os.getenv(api_key_env, "").strip()
     default_model = default_model_for_provider(api_provider)
+    default_fallback_model = default_fallback_model_for_provider(
+        api_provider
+    )
     use_dummy_raw = os.getenv("DANMAKU_USE_DUMMY_API", "true").strip().lower()
     send_screenshot_raw = os.getenv(
         "DANMAKU_SEND_SCREENSHOT", "true").strip().lower()
@@ -105,7 +123,10 @@ def load_settings_from_env() -> AppSettings:
             os.getenv("SAMPLE_CAPTURE_JPEG_QUALITY", "82")),
         api_provider=api_provider,
         model_name=os.getenv("MODEL_NAME", default_model),
-        fallback_model_name=os.getenv("FALLBACK_MODEL_NAME", "gemini-3.5-flash"),
+        fallback_model_name=os.getenv(
+            "FALLBACK_MODEL_NAME",
+            default_fallback_model,
+        ),
         api_key=api_key,
         send_screenshot_to_api=send_screenshot_raw in {"1", "true", "yes", "y"},
         api_image_max_dimension=api_image_max_dimension,

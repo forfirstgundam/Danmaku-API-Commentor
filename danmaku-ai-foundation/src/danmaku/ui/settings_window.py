@@ -27,6 +27,7 @@ from danmaku.capture.capture_service import list_windows
 from danmaku.config import (
     API_KEY_ENV_BY_PROVIDER,
     api_key_env_for_provider,
+    default_fallback_model_for_provider,
     default_model_for_provider,
 )
 from danmaku.models import AppSettings, SessionProfile
@@ -274,6 +275,13 @@ class SettingsWindow(QWidget):
         }
         self._api_keys_by_provider[self.settings.api_provider] = (
             self.settings.api_key
+        )
+        self._fallback_models_by_provider = {
+            provider: default_fallback_model_for_provider(provider)
+            for provider in API_KEY_ENV_BY_PROVIDER
+        }
+        self._fallback_models_by_provider[self.settings.api_provider] = (
+            self.settings.fallback_model_name
         )
         self._last_api_provider = self.settings.api_provider
         self.api_key_input = QLineEdit(self.settings.api_key)
@@ -1000,6 +1008,9 @@ class SettingsWindow(QWidget):
         self._api_keys_by_provider[previous_provider] = (
             self.api_key_input.text().strip()
         )
+        self._fallback_models_by_provider[previous_provider] = (
+            self.fallback_model_input.text().strip()
+        )
 
         provider = self.provider_input.currentData()
         previous_default = default_model_for_provider(previous_provider)
@@ -1011,6 +1022,9 @@ class SettingsWindow(QWidget):
 
         self.api_key_input.setText(
             self._api_keys_by_provider.get(provider, "")
+        )
+        self.fallback_model_input.setText(
+            self._fallback_models_by_provider.get(provider, "")
         )
         self._last_api_provider = provider
         self._update_api_key_placeholder()
