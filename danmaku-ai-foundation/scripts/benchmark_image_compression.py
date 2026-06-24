@@ -35,7 +35,7 @@ from danmaku.models import CaptureFrame
 
 
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
-DEFAULT_DIMENSIONS = [512, 768, 1024, 0]
+DEFAULT_DIMENSIONS = [512, 768, 1024, 1536, 0]
 
 
 @dataclass(slots=True)
@@ -278,6 +278,209 @@ def write_variant_log(
     append_jsonl(variant_dir / "comments.jsonl", record)
 
 
+def format_compression_comparison_cell(
+    result: CompressionResult | None,
+) -> str:
+    if result is None:
+        return "NO RESULT"
+    if not result.ok:
+        return f"ERROR\n{result.error_message or 'Unknown error'}"
+
+    sections = [
+        "REQUEST\n"
+        f"{result.request_width}x{result.request_height}\n"
+        f"{round(result.request_bytes / 1024, 1)} KB "
+        f"({result.request_size_ratio:.1%} of source)",
+        "TIMING\n"
+        f"image preparation: {result.image_preparation_sec}s\n"
+        f"API duration: {result.api_duration_sec}s\n"
+        f"end-to-end: {result.end_to_end_sec}s",
+    ]
+    if result.comments:
+        sections.append(
+            "COMMENTS\n"
+            + "\n".join(f"• {comment}" for comment in result.comments)
+        )
+    if result.long_comments:
+        label = (
+            "LONG COMMENT"
+            if len(result.long_comments) == 1
+            else "LONG COMMENTS"
+        )
+        sections.append(
+            label
+            + "\n"
+            + "\n".join(
+                f"• {comment}" for comment in result.long_comments
+            )
+        )
+    sections.append(f"SUMMARY\n{result.summary or '(empty)'}")
+    return "\n\n".join(sections)
+
+
+def write_compression_quality_workbook(
+    results: list[CompressionResult],
+    output_dir: Path,
+) -> Path:
+    try:
+        import xlsxwriter
+    except ImportError as exc:
+        raise RuntimeError(
+            "Excel export requires XlsxWriter. "
+            "Run: python -m pip install -r requirements.txt"
+        ) from exc
+
+    workbook_path = output_dir / "compression_quality_comparison.xlsx"
+    variants = list(dict.fromkeys(result.variant for result in results))
+    frame_indices = sorted({result.frame_index for result in results})
+    result_by_key = {
+        (result.frame_index, result.variant): result
+        for result in results
+    }
+    image_by_frame = {
+        result.frame_index: result.image_path for result in results
+    }
+
+    workbook = xlsxwriter.Workbook(
+        workbook_path,
+        {"constant_memory": True},
+    )
+    worksheet = workbook.add_worksheet("Compression Comparison")
+    worksheet.hide_gridlines(2)
+    worksheet.freeze_panes(1, 1)
+
+    header_format = workbook.add_format(
+        {
+            "bold": True,
+            "font_color": "#FFFFFF",
+            "bg_color": "#243B53",
+            "align": "center",
+            "valign": "vcenter",
+            "text_wrap": True,
+        }
+    )
+    screenshot_header_format = workbook.add_format(
+        {
+            "bold": True,
+            "font_color": "#FFFFFF",
+            "bg_color": "#147D8F",
+            "align": "center",
+            "valign": "vcenter",
+        }
+    )
+    screenshot_formats = [
+        workbook.add_format({"bg_color": color})
+        for color in ("#D9EEF2", "#CBE7EC")
+    ]
+    response_formats = [
+        workbook.add_format(
+            {
+                "font_color": "#1F2933",
+                "bg_color": color,
+                "align": "left",
+                "valign": "top",
+                "text_wrap": True,
+            }
+        )
+        for color in ("#F4F8FB", "#EAF1F5")
+    ]
+    error_formats = [
+        workbook.add_format(
+            {
+                "font_color": "#991B1B",
+                "bg_color": color,
+                "align": "left",
+                "valign": "top",
+                "text_wrap": True,
+            }
+        )
+        for color in ("#FEE2E2", "#FECACA")
+    ]
+
+    worksheet.write(0, 0, "Screenshot", screenshot_header_format)
+    for column, variant in enumerate(variants, start=1):
+        sample = next(
+            result for result in results if result.variant == variant
+        )
+        label = (
+            "Original"
+            if sample.image_max_dimension <= 0
+            else f"{variant}px"
+        )
+        worksheet.write(
+            0,
+            column,
+            f"{label}\nJPEG {sample.jpeg_quality}",
+            header_format,
+        )
+
+    for row, frame_index in enumerate(frame_indices, start=1):
+        stripe = (row - 1) % 2
+        path = Path(image_by_frame[frame_index])
+        worksheet.write_blank(
+            row,
+            0,
+            None,
+            screenshot_formats[stripe],
+        )
+        if path.is_file():
+            from PIL import Image
+
+            with Image.open(path) as source:
+                image_width, image_height = source.size
+            scale = min(
+                240 / max(1, image_width),
+                150 / max(1, image_height),
+            )
+            worksheet.insert_image(
+                row,
+                0,
+                str(path),
+                {
+                    "x_scale": scale,
+                    "y_scale": scale,
+                    "x_offset": 5,
+                    "y_offset": 5,
+                    "url": path.resolve().as_uri(),
+                    "description": f"Frame {frame_index}: {path.name}",
+                    "object_position": 1,
+                },
+            )
+        else:
+            worksheet.write(
+                row,
+                0,
+                f"Frame {frame_index}\n{path.name}",
+                screenshot_formats[stripe],
+            )
+
+        max_lines = 12
+        for column, variant in enumerate(variants, start=1):
+            result = result_by_key.get((frame_index, variant))
+            text = format_compression_comparison_cell(result)
+            cell_format = (
+                error_formats[stripe]
+                if result is None or not result.ok
+                else response_formats[stripe]
+            )
+            worksheet.write(row, column, text, cell_format)
+            max_lines = max(max_lines, text.count("\n") + 1)
+
+        worksheet.set_row(row, min(340, max(140, max_lines * 13)))
+
+    worksheet.set_row(0, 46)
+    worksheet.set_column(0, 0, 36)
+    worksheet.set_column(1, len(variants), 52)
+    worksheet.autofilter(
+        0,
+        0,
+        len(frame_indices),
+        len(variants),
+    )
+    workbook.close()
+    return workbook_path
+
+
 def write_outputs(
     results: list[CompressionResult],
     output_dir: Path,
@@ -289,6 +492,9 @@ def write_outputs(
     comparison_path = output_dir / "compression_comparison.csv"
     quality_path = output_dir / "quality_review.csv"
     summary_path = output_dir / "run_summary.csv"
+    quality_workbook_path = (
+        output_dir / "compression_quality_comparison.xlsx"
+    )
 
     fields = list(asdict(results[0]).keys())
     with frame_results_path.open(
@@ -542,12 +748,14 @@ def write_outputs(
         "with an isolated rolling summary and recent-comment history.\n"
     )
     (output_dir / "README.txt").write_text(readme, encoding="utf-8")
+    write_compression_quality_workbook(results, output_dir)
 
     print(f"[done] wrote {frame_results_path}")
     print(f"[done] wrote {comments_path}")
     print(f"[done] wrote {comparison_path}")
     print(f"[done] wrote {quality_path}")
     print(f"[done] wrote {summary_path}")
+    print(f"[done] wrote {quality_workbook_path}")
 
 
 def parse_dimension(value: str) -> int:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import inspect
 import json
 import os
 import statistics
@@ -11,11 +10,6 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
-
-from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font
-from openpyxl.utils import get_column_letter
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
@@ -115,44 +109,19 @@ def build_client(
         print("[skip] missing GEMINI_API_KEY")
         return None
 
-    kwargs: dict[str, Any] = {
-        "api_key": api_key,
-        "api_provider": "gemini",
-        "model_name": model,
-        "use_dummy_api": False,
-        "send_screenshot": True,
-        "image_max_dimension": current_dimension,
-        "image_jpeg_quality": current_quality,
-        "max_output_tokens": max_output_tokens,
-        "save_api_images": False,
-    }
-
-    params = inspect.signature(LLMClient).parameters
-    history_dimension_keys = [
-        "historical_frame_max_dimension",
-        "history_frame_max_dimension",
-        "historical_image_max_dimension",
-        "history_image_max_dimension",
-        "api_history_image_max_dimension",
-    ]
-    history_quality_keys = [
-        "historical_frame_jpeg_quality",
-        "history_frame_jpeg_quality",
-        "historical_image_jpeg_quality",
-        "history_image_jpeg_quality",
-        "api_history_image_jpeg_quality",
-    ]
-
-    for key in history_dimension_keys:
-        if key in params:
-            kwargs[key] = history_dimension
-            break
-    for key in history_quality_keys:
-        if key in params:
-            kwargs[key] = history_quality
-            break
-
-    return LLMClient(**kwargs)
+    return LLMClient(
+        api_key=api_key,
+        api_provider="gemini",
+        model_name=model,
+        use_dummy_api=False,
+        send_screenshot=True,
+        image_max_dimension=current_dimension,
+        image_jpeg_quality=current_quality,
+        history_image_max_dimension=history_dimension,
+        history_image_jpeg_quality=history_quality,
+        max_output_tokens=max_output_tokens,
+        save_api_images=False,
+    )
 
 
 def add_metrics(
@@ -170,41 +139,25 @@ def call_model(
     recent_comments_sent: list[str],
     historical_frames: list[CaptureFrame] | None,
 ) -> tuple[CommentBatch, bool]:
-    kwargs: dict[str, Any] = {
-        "frame": frame,
-        "previous_summary": context_sent,
-        "previous_comments": recent_comments_sent,
-        "use_streaming": False,
-    }
-
-    history_arg_used = False
-    if historical_frames:
-        generate_params = inspect.signature(client.generate_comments).parameters
-        for key in (
-            "historical_frames",
-            "history_frames",
-            "previous_frames",
-            "recent_frames",
-        ):
-            if key in generate_params:
-                kwargs[key] = historical_frames
-                history_arg_used = True
-                break
-
-    batch = client.generate_comments(**kwargs)
-    return batch, history_arg_used
+    batch = client.generate_comments(
+        frame=frame,
+        previous_summary=context_sent,
+        previous_comments=recent_comments_sent,
+        context_frames=historical_frames or [],
+        use_streaming=False,
+    )
+    return batch, bool(historical_frames)
 
 
-def history_paths_for_index(
+def build_request_groups(
     images: list[Path],
-    frame_index: int,
-    history_count: int,
-) -> list[Path]:
-    if history_count <= 0 or frame_index <= 1:
-        return []
-    start = max(0, frame_index - 1 - history_count)
-    end = frame_index - 1
-    return images[start:end]
+    frames_per_request: int,
+) -> list[list[Path]]:
+    group_size = max(1, frames_per_request)
+    return [
+        images[index:index + group_size]
+        for index in range(0, len(images), group_size)
+    ]
 
 
 def generate_frame(
@@ -213,19 +166,16 @@ def generate_frame(
     config: VariantConfig,
     image_path: Path,
     frame_index: int,
-    images: list[Path],
+    historical_paths: list[Path],
     context: ModelContext,
     retry_count: int,
 ) -> MultiFrameResult:
     frame = build_capture_frame(image_path, frame_index)
-    historical_paths = history_paths_for_index(
-        images=images,
-        frame_index=frame_index,
-        history_count=config.history_count if config.use_multi_frame else 0,
-    )
+    if not config.use_multi_frame:
+        historical_paths = []
     historical_frames = [
-        build_capture_frame(path, idx + 1)
-        for idx, path in enumerate(historical_paths)
+        build_capture_frame(path, frame_index)
+        for path in historical_paths
     ]
 
     context_sent = context.build_context_summary()
@@ -282,7 +232,7 @@ def generate_frame(
         logged_at=datetime.now().isoformat(timespec="seconds"),
         variant=config.name,
         use_multi_frame=config.use_multi_frame,
-        history_count_requested=config.history_count if config.use_multi_frame else 0,
+        history_count_requested=len(historical_paths),
         history_count_sent=sent_history_count,
         current_dimension=config.current_dimension,
         current_quality=config.current_quality,
@@ -375,40 +325,221 @@ def comparison_cell(result: MultiFrameResult | None) -> str:
     ]
     if result.comments:
         parts.append(
-            "COMMENTS\n" + "\n".join(f"- {item}" for item in result.comments)
+            "COMMENTS\n" + "\n".join(f"• {item}" for item in result.comments)
         )
     if result.long_comments:
+        label = (
+            "LONG COMMENT"
+            if len(result.long_comments) == 1
+            else "LONG COMMENTS"
+        )
         parts.append(
-            "LONG COMMENTS\n"
-            + "\n".join(f"- {item}" for item in result.long_comments)
+            label
+            + "\n"
+            + "\n".join(f"• {item}" for item in result.long_comments)
         )
     parts.append(f"SUMMARY\n{result.summary or '(empty)'}")
     return "\n\n".join(parts)
 
 
-def set_excel_style(ws) -> None:
-    header_font = Font(bold=True)
-    top_alignment = Alignment(
-        vertical="top",
-        wrap_text=True,
-    )
-    for cell in ws[1]:
-        cell.font = header_font
-        cell.alignment = top_alignment
+def write_multiframe_quality_workbook(
+    results: list[MultiFrameResult],
+    output_dir: Path,
+) -> Path:
+    try:
+        import xlsxwriter
+    except ImportError as exc:
+        raise RuntimeError(
+            "Excel export requires XlsxWriter. "
+            "Run: python -m pip install -r requirements.txt"
+        ) from exc
 
-    for row in ws.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = top_alignment
-
-    width_map = {
-        1: 10,
-        2: 40,
-        3: 15,
-        4: 70,
-        5: 70,
+    workbook_path = output_dir / "comment_quality_comparison.xlsx"
+    variants = list(dict.fromkeys(result.variant for result in results))
+    frame_indices = sorted({result.frame_index for result in results})
+    result_by_key = {
+        (result.frame_index, result.variant): result
+        for result in results
     }
-    for index, width in width_map.items():
-        ws.column_dimensions[get_column_letter(index)].width = width
+    image_by_frame = {
+        result.frame_index: result.image_path for result in results
+    }
+
+    workbook = xlsxwriter.Workbook(
+        workbook_path,
+        {"constant_memory": True},
+    )
+    worksheet = workbook.add_worksheet("Comment Comparison")
+    worksheet.hide_gridlines(2)
+    worksheet.freeze_panes(1, 1)
+
+    header_format = workbook.add_format(
+        {
+            "bold": True,
+            "font_color": "#FFFFFF",
+            "bg_color": "#243B53",
+            "align": "center",
+            "valign": "vcenter",
+            "text_wrap": True,
+        }
+    )
+    screenshot_header_format = workbook.add_format(
+        {
+            "bold": True,
+            "font_color": "#FFFFFF",
+            "bg_color": "#147D8F",
+            "align": "center",
+            "valign": "vcenter",
+        }
+    )
+    screenshot_formats = [
+        workbook.add_format({"bg_color": color})
+        for color in ("#D9EEF2", "#CBE7EC")
+    ]
+    response_formats = [
+        workbook.add_format(
+            {
+                "font_color": "#1F2933",
+                "bg_color": color,
+                "align": "left",
+                "valign": "top",
+                "text_wrap": True,
+            }
+        )
+        for color in ("#F4F8FB", "#EAF1F5")
+    ]
+    error_formats = [
+        workbook.add_format(
+            {
+                "font_color": "#991B1B",
+                "bg_color": color,
+                "align": "left",
+                "valign": "top",
+                "text_wrap": True,
+            }
+        )
+        for color in ("#FEE2E2", "#FECACA")
+    ]
+
+    worksheet.write(0, 0, "Screenshot", screenshot_header_format)
+    for column, variant in enumerate(variants, start=1):
+        sample = next(
+            result for result in results if result.variant == variant
+        )
+        if sample.use_multi_frame:
+            label = (
+                "Multi-frame\n"
+                f"current {sample.current_dimension}px Q{sample.current_quality}\n"
+                f"history {sample.history_count_requested}x "
+                f"{sample.history_dimension}px Q{sample.history_quality}"
+            )
+        else:
+            label = (
+                "Single-frame\n"
+                f"{sample.current_dimension}px Q{sample.current_quality}"
+            )
+        worksheet.write(0, column, label, header_format)
+
+    for row, frame_index in enumerate(frame_indices, start=1):
+        stripe = (row - 1) % 2
+        path = Path(image_by_frame[frame_index])
+        worksheet.write_blank(
+            row,
+            0,
+            None,
+            screenshot_formats[stripe],
+        )
+        if path.is_file():
+            from PIL import Image
+
+            with Image.open(path) as source:
+                image_width, image_height = source.size
+            scale = min(
+                240 / max(1, image_width),
+                150 / max(1, image_height),
+            )
+            worksheet.insert_image(
+                row,
+                0,
+                str(path),
+                {
+                    "x_scale": scale,
+                    "y_scale": scale,
+                    "x_offset": 5,
+                    "y_offset": 5,
+                    "url": path.resolve().as_uri(),
+                    "description": f"Frame {frame_index}: {path.name}",
+                    "object_position": 1,
+                },
+            )
+        else:
+            worksheet.write(
+                row,
+                0,
+                f"Frame {frame_index}\n{path.name}",
+                screenshot_formats[stripe],
+            )
+
+        max_lines = 12
+        for column, variant in enumerate(variants, start=1):
+            result = result_by_key.get((frame_index, variant))
+            text = comparison_cell(result)
+            cell_format = (
+                error_formats[stripe]
+                if result is None or not result.ok
+                else response_formats[stripe]
+            )
+            worksheet.write(row, column, text, cell_format)
+            max_lines = max(max_lines, text.count("\n") + 1)
+        worksheet.set_row(row, min(360, max(150, max_lines * 13)))
+
+    worksheet.set_row(0, 64)
+    worksheet.set_column(0, 0, 36)
+    worksheet.set_column(1, len(variants), 58)
+    worksheet.autofilter(
+        0,
+        0,
+        len(frame_indices),
+        len(variants),
+    )
+
+    review = workbook.add_worksheet("Quality Review")
+    review.hide_gridlines(2)
+    review.freeze_panes(1, 0)
+    review_headers = [
+        "Frame",
+        "Image Path",
+        "Single Score",
+        "Multi Score",
+        "Winner",
+        "Notes",
+    ]
+    review.write_row(0, 0, review_headers, header_format)
+    review_format = workbook.add_format(
+        {
+            "valign": "top",
+            "text_wrap": True,
+            "bg_color": "#F4F8FB",
+        }
+    )
+    for row, frame_index in enumerate(frame_indices, start=1):
+        review.write(row, 0, frame_index, review_format)
+        review.write(
+            row,
+            1,
+            image_by_frame[frame_index],
+            review_format,
+        )
+        for column in range(2, 6):
+            review.write_blank(row, column, None, review_format)
+    review.set_column(0, 0, 10)
+    review.set_column(1, 1, 70)
+    review.set_column(2, 4, 14)
+    review.set_column(5, 5, 50)
+    review.autofilter(0, 0, len(frame_indices), len(review_headers) - 1)
+
+    workbook.close()
+    return workbook_path
 
 
 def write_outputs(
@@ -486,38 +617,7 @@ def write_outputs(
                 }
             )
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "comparison"
-    ws.append(comparison_fields)
-    for row in comparison_rows:
-        ws.append([row.get(field, "") for field in comparison_fields])
-    set_excel_style(ws)
-
-    ws2 = wb.create_sheet("quality_review")
-    review_fields = [
-        "frame_index",
-        "image_path",
-        "single_score",
-        "multi_score",
-        "winner",
-        "notes",
-    ]
-    ws2.append(review_fields)
-    for row in comparison_rows:
-        ws2.append(
-            [
-                row["frame_index"],
-                row["image_path"],
-                "",
-                "",
-                "",
-                "",
-            ]
-        )
-    set_excel_style(ws2)
-
-    wb.save(workbook_path)
+    write_multiframe_quality_workbook(results, output_dir)
 
     grouped: dict[str, list[MultiFrameResult]] = {}
     for result in results:
@@ -632,13 +732,14 @@ def write_outputs(
     readme = (
         "Gemini multi-frame sequence benchmark\n\n"
         f"Model: {results[0].model}\n"
-        f"Frames per variant: {image_count}\n"
+        f"Request groups per variant: {image_count}\n"
         f"Variants: {', '.join(grouped)}\n"
         f"Maximum output tokens: {max_output_tokens}\n\n"
-        "Single-frame and multi-frame variants process the same ordered "
-        "screenshot sequence with isolated rolling summary and recent-comment "
-        "history. The comparison outputs are intended for manual comment "
-        "quality review as well as latency analysis.\n"
+        "Source screenshots are divided into non-overlapping request groups. "
+        "The single-frame variant sends only each group's final image, while "
+        "the multi-frame variant sends the earlier images as history plus "
+        "the same final image as current. Each variant has isolated rolling "
+        "summary and recent-comment history.\n"
     )
     (output_dir / "README.txt").write_text(readme, encoding="utf-8")
 
@@ -678,7 +779,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--single-quality", type=int, default=72)
     parser.add_argument("--multi-current-dimension", type=int, default=768)
     parser.add_argument("--multi-current-quality", type=int, default=72)
-    parser.add_argument("--history-count", type=int, default=3)
+    parser.add_argument(
+        "--frames-per-request",
+        type=int,
+        default=4,
+        help=(
+            "Number of consecutive source images in each non-overlapping "
+            "request group. The final image is current and earlier images "
+            "are historical. Default: 4."
+        ),
+    )
     parser.add_argument("--history-dimension", type=int, default=384)
     parser.add_argument("--history-quality", type=int, default=42)
     return parser
@@ -690,6 +800,12 @@ def main() -> int:
 
     args = build_parser().parse_args()
     images = collect_images(Path(args.image_dir), args.limit)
+    if args.frames_per_request < 1:
+        raise ValueError("--frames-per-request must be at least 1")
+    request_groups = build_request_groups(
+        images,
+        args.frames_per_request,
+    )
 
     run_id = datetime.now().strftime("multiframe_%Y%m%d_%H%M%S")
     output_dir = Path(args.output_dir) / run_id
@@ -711,7 +827,7 @@ def main() -> int:
             current_dimension=args.multi_current_dimension,
             current_quality=args.multi_current_quality,
             use_multi_frame=True,
-            history_count=args.history_count,
+            history_count=max(0, args.frames_per_request - 1),
             history_dimension=args.history_dimension,
             history_quality=args.history_quality,
         ),
@@ -719,16 +835,19 @@ def main() -> int:
 
     print(
         f"[start] model={args.model} images={len(images)} "
+        f"request_groups={len(request_groups)} "
+        f"frames_per_request={args.frames_per_request} "
         f"single={args.single_dimension}px/{args.single_quality} "
         f"multi={args.multi_current_dimension}px/{args.multi_current_quality} "
-        f"history={args.history_count}x {args.history_dimension}px/{args.history_quality}"
+        f"history<= {max(0, args.frames_per_request - 1)}x "
+        f"{args.history_dimension}px/{args.history_quality}"
     )
     print(
         f"[start] max_output_tokens={args.max_output_tokens} "
         f"retry_count={args.retry_count}"
     )
 
-    for config in variants:
+    for variant_index, config in enumerate(variants, start=1):
         client = build_client(
             model=args.model,
             current_dimension=config.current_dimension,
@@ -742,20 +861,29 @@ def main() -> int:
 
         context = ModelContext()
         variant_dir = output_dir / "variants" / config.name
-        print(f"[variant] starting {config.name}")
+        print(
+            f"[variant] starting {variant_index}/{len(variants)} "
+            f"{config.name}"
+        )
 
-        for frame_index, image_path in enumerate(images, start=1):
+        for request_index, group in enumerate(request_groups, start=1):
+            image_path = group[-1]
+            historical_paths = (
+                group[:-1] if config.use_multi_frame else []
+            )
             print(
-                f"[run] {config.name} frame {frame_index}/{len(images)} "
-                f"{image_path.name}"
+                f"[run] variant {variant_index}/{len(variants)} "
+                f"{config.name} request "
+                f"{request_index}/{len(request_groups)} "
+                f"source_frames={len(group)} current={image_path.name}"
             )
             result = generate_frame(
                 client=client,
                 model=args.model,
                 config=config,
                 image_path=image_path,
-                frame_index=frame_index,
-                images=images,
+                frame_index=request_index,
+                historical_paths=historical_paths,
                 context=context,
                 retry_count=max(0, args.retry_count),
             )
@@ -774,12 +902,15 @@ def main() -> int:
                 f"comments={len(result.comments) + len(result.long_comments)}"
             )
 
-        print(f"[variant] finished {config.name}")
+        print(
+            f"[variant] finished {variant_index}/{len(variants)} "
+            f"{config.name}"
+        )
 
     write_outputs(
         results=results,
         output_dir=output_dir,
-        image_count=len(images),
+        image_count=len(request_groups),
         max_output_tokens=args.max_output_tokens,
     )
     print(f"[done] multi-frame benchmark: {output_dir}")

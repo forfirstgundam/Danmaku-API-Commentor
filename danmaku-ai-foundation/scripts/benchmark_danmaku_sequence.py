@@ -25,6 +25,7 @@ except ImportError:
 from benchmark_model_latency import (
     MODEL_PRESETS,
     build_client,
+    format_comparison_cell,
     parse_model,
     percentile,
 )
@@ -261,6 +262,164 @@ def write_model_log(
     append_jsonl(model_dir / "comments.jsonl", record)
 
 
+def write_sequence_quality_workbook(
+    results: list[SequenceResult],
+    output_dir: Path,
+) -> Path:
+    try:
+        import xlsxwriter
+    except ImportError as exc:
+        raise RuntimeError(
+            "Excel export requires XlsxWriter. "
+            "Run: python -m pip install -r requirements.txt"
+        ) from exc
+
+    workbook_path = output_dir / "comment_quality_comparison.xlsx"
+    model_keys = list(group_results_by_model(results))
+    frame_indices = sorted({result.frame_index for result in results})
+    result_by_key = {
+        (result.frame_index, result.provider, result.model): result
+        for result in results
+    }
+    image_by_frame = {
+        result.frame_index: result.image_path for result in results
+    }
+
+    workbook = xlsxwriter.Workbook(
+        workbook_path,
+        {"constant_memory": True},
+    )
+    worksheet = workbook.add_worksheet("Comment Comparison")
+    worksheet.hide_gridlines(2)
+    worksheet.freeze_panes(1, 1)
+
+    header_format = workbook.add_format(
+        {
+            "bold": True,
+            "font_color": "#FFFFFF",
+            "bg_color": "#243B53",
+            "align": "center",
+            "valign": "vcenter",
+            "text_wrap": True,
+        }
+    )
+    screenshot_header_format = workbook.add_format(
+        {
+            "bold": True,
+            "font_color": "#FFFFFF",
+            "bg_color": "#147D8F",
+            "align": "center",
+            "valign": "vcenter",
+        }
+    )
+    screenshot_formats = [
+        workbook.add_format({"bg_color": color})
+        for color in ("#D9EEF2", "#CBE7EC")
+    ]
+    response_formats = [
+        workbook.add_format(
+            {
+                "font_color": "#1F2933",
+                "bg_color": color,
+                "align": "left",
+                "valign": "top",
+                "text_wrap": True,
+            }
+        )
+        for color in ("#F4F8FB", "#EAF1F5")
+    ]
+    error_formats = [
+        workbook.add_format(
+            {
+                "font_color": "#991B1B",
+                "bg_color": color,
+                "align": "left",
+                "valign": "top",
+                "text_wrap": True,
+            }
+        )
+        for color in ("#FEE2E2", "#FECACA")
+    ]
+
+    worksheet.write(0, 0, "Screenshot", screenshot_header_format)
+    for column, (provider, model) in enumerate(model_keys, start=1):
+        worksheet.write(
+            0,
+            column,
+            f"{provider}\n{model}",
+            header_format,
+        )
+
+    for row, frame_index in enumerate(frame_indices, start=1):
+        stripe = (row - 1) % 2
+        path = Path(image_by_frame[frame_index])
+        worksheet.write_blank(
+            row,
+            0,
+            None,
+            screenshot_formats[stripe],
+        )
+        if path.is_file():
+            from PIL import Image
+
+            with Image.open(path) as source:
+                image_width, image_height = source.size
+            scale = min(
+                240 / max(1, image_width),
+                150 / max(1, image_height),
+            )
+            worksheet.insert_image(
+                row,
+                0,
+                str(path),
+                {
+                    "x_scale": scale,
+                    "y_scale": scale,
+                    "x_offset": 5,
+                    "y_offset": 5,
+                    "url": path.resolve().as_uri(),
+                    "description": f"Frame {frame_index}: {path.name}",
+                    "object_position": 1,
+                },
+            )
+        else:
+            worksheet.write(
+                row,
+                0,
+                f"Frame {frame_index}\n{path.name}",
+                screenshot_formats[stripe],
+            )
+
+        max_lines = 12
+        for column, (provider, model) in enumerate(
+            model_keys,
+            start=1,
+        ):
+            result = result_by_key.get((frame_index, provider, model))
+            text = format_comparison_cell(result)
+            cell_format = (
+                error_formats[stripe]
+                if result is None or not result.ok
+                else response_formats[stripe]
+            )
+            worksheet.write(row, column, text, cell_format)
+            max_lines = max(max_lines, text.count("\n") + 1)
+
+        worksheet.set_row(row, min(300, max(120, max_lines * 13)))
+
+    worksheet.set_row(0, 46)
+    worksheet.set_column(0, 0, 36)
+    worksheet.set_column(1, len(model_keys), 48)
+    worksheet.autofilter(
+        0,
+        0,
+        len(frame_indices),
+        len(model_keys),
+    )
+    workbook.close()
+    return workbook_path
+
+
 def write_aggregate_outputs(
     results: list[SequenceResult],
     output_dir: Path,
@@ -272,6 +431,9 @@ def write_aggregate_outputs(
     comparison_path = output_dir / "comment_comparison.csv"
     quality_path = output_dir / "quality_review.csv"
     summary_path = output_dir / "run_summary.csv"
+    quality_workbook_path = (
+        output_dir / "comment_quality_comparison.xlsx"
+    )
 
     result_fieldnames = list(asdict(results[0]).keys())
     with results_path.open("w", newline="", encoding="utf-8-sig") as file:
@@ -464,12 +626,14 @@ def write_aggregate_outputs(
         "ready for manual 1-5 scoring.\n"
     )
     (output_dir / "README.txt").write_text(readme, encoding="utf-8")
+    write_sequence_quality_workbook(results, output_dir)
 
     print(f"[done] wrote {results_path}")
     print(f"[done] wrote {comments_path}")
     print(f"[done] wrote {comparison_path}")
     print(f"[done] wrote {quality_path}")
     print(f"[done] wrote {summary_path}")
+    print(f"[done] wrote {quality_workbook_path}")
 
 
 def group_results_by_model(
