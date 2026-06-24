@@ -9,7 +9,6 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from io import BytesIO
 from pathlib import Path
 
 
@@ -31,35 +30,33 @@ from benchmark_danmaku_sequence import (
 )
 from benchmark_model_latency import percentile
 from danmaku.api.llm_client import LLMClient
-from danmaku.models import CaptureFrame
+from danmaku.models import CaptureFrame, CommentBatch
 
 
 DEFAULT_MODEL = "gemini-3.1-flash-lite"
-DEFAULT_DIMENSIONS = [512, 768, 1024, 1536, 0]
+DEFAULT_DIMENSIONS = [0, 768]
+DEFAULT_STREAMING_MODES = [False, True]
 
 
 @dataclass(slots=True)
-class CompressionResult:
+class StreamingResult:
     logged_at: str
     variant: str
     image_max_dimension: int
     jpeg_quality: int
+    streaming: bool
     frame_index: int
     capture_timestamp: float
     image_path: str
-    source_width: int
-    source_height: int
     source_bytes: int
-    request_width: int
-    request_height: int
-    request_bytes: int
-    request_size_ratio: float
     model: str
     latency_sec: float
     image_preparation_sec: float
     api_duration_sec: float
     response_parsing_sec: float
     end_to_end_sec: float
+    first_visible_comment_sec: float | None
+    streamed_comment_count: int
     first_attempt_sec: float
     retry_used: bool
     retry_duration_sec: float | None
@@ -76,48 +73,13 @@ class CompressionResult:
     error_message: str
 
 
-def variant_name(max_dimension: int) -> str:
+def dimension_name(max_dimension: int) -> str:
     return "original" if max_dimension <= 0 else str(max_dimension)
 
 
-def measure_request_image(
-    image_path: Path,
-    max_dimension: int,
-    jpeg_quality: int,
-) -> tuple[int, int, int, int, int]:
-    from PIL import Image
-
-    with Image.open(image_path) as image:
-        source_width, source_height = image.size
-        if max_dimension <= 0:
-            return (
-                source_width,
-                source_height,
-                source_width,
-                source_height,
-                image_path.stat().st_size,
-            )
-
-        image = image.convert("RGB")
-        image.thumbnail(
-            (max_dimension, max_dimension),
-            Image.Resampling.LANCZOS,
-        )
-        request_width, request_height = image.size
-        buffer = BytesIO()
-        image.save(
-            buffer,
-            format="JPEG",
-            quality=max(20, min(95, jpeg_quality)),
-            optimize=True,
-        )
-        return (
-            source_width,
-            source_height,
-            request_width,
-            request_height,
-            len(buffer.getvalue()),
-        )
+def variant_name(max_dimension: int, streaming: bool) -> str:
+    mode = "stream_on" if streaming else "stream_off"
+    return f"{dimension_name(max_dimension)}_{mode}"
 
 
 def build_client(
@@ -144,77 +106,122 @@ def build_client(
     )
 
 
+def add_metrics(
+    totals: dict[str, float],
+    metrics: dict[str, float],
+) -> None:
+    for name, value in metrics.items():
+        totals[name] = totals.get(name, 0.0) + float(value)
+
+
+def call_model(
+    client: LLMClient,
+    frame: CaptureFrame,
+    context_sent: str,
+    recent_comments_sent: list[str],
+    streaming: bool,
+    overall_started: float,
+    first_visible_holder: list[float | None],
+    streamed_comments: list[str],
+) -> CommentBatch:
+    def on_comment(comment: str) -> None:
+        if first_visible_holder[0] is None:
+            first_visible_holder[0] = round(
+                time.perf_counter() - overall_started,
+                6,
+            )
+        streamed_comments.append(comment)
+
+    return client.generate_comments(
+        frame=frame,
+        previous_summary=context_sent,
+        previous_comments=recent_comments_sent,
+        use_streaming=streaming,
+        on_comment=on_comment if streaming else None,
+    )
+
+
 def generate_frame(
     client: LLMClient,
     model: str,
     max_dimension: int,
     jpeg_quality: int,
+    streaming: bool,
     image_path: Path,
     frame_index: int,
     context: ModelContext,
-) -> CompressionResult:
+    retry_count: int,
+) -> StreamingResult:
     frame = CaptureFrame(
         image_path=image_path,
         timestamp=capture_timestamp(image_path, frame_index),
         ocr_text="",
     )
-    (
-        source_width,
-        source_height,
-        request_width,
-        request_height,
-        request_bytes,
-    ) = measure_request_image(image_path, max_dimension, jpeg_quality)
-    source_bytes = image_path.stat().st_size
     context_sent = context.build_context_summary()
     recent_comments_sent = context.recent_comment_history[-12:]
 
-    total_started = time.perf_counter()
+    overall_started = time.perf_counter()
+    first_visible_holder: list[float | None] = [None]
+    streamed_comments: list[str] = []
+    timing_totals: dict[str, float] = {}
+
     first_started = time.perf_counter()
-    batch = client.generate_comments(
+    batch = call_model(
+        client=client,
         frame=frame,
-        previous_summary=context_sent,
-        previous_comments=recent_comments_sent,
-        use_streaming=False,
-        on_comment=None,
+        context_sent=context_sent,
+        recent_comments_sent=recent_comments_sent,
+        streaming=streaming,
+        overall_started=overall_started,
+        first_visible_holder=first_visible_holder,
+        streamed_comments=streamed_comments,
     )
     first_attempt_sec = round(time.perf_counter() - first_started, 3)
-    timing_totals = dict(client.last_call_metrics)
+    add_metrics(timing_totals, client.last_call_metrics)
 
     retry_used = False
     retry_duration_sec: float | None = None
-    if batch.is_error:
-        retry_used = True
-        retry_started = time.perf_counter()
-        batch = client.generate_comments(
-            frame=frame,
-            previous_summary=context_sent,
-            previous_comments=recent_comments_sent,
-            use_streaming=False,
-            on_comment=None,
-        )
-        retry_duration_sec = round(time.perf_counter() - retry_started, 3)
-        for name, value in client.last_call_metrics.items():
-            timing_totals[name] = timing_totals.get(name, 0.0) + value
 
-    latency_sec = round(time.perf_counter() - total_started, 3)
+    retry_started_total: float | None = None
+    for _ in range(retry_count):
+        if not batch.is_error:
+            break
+
+        retry_used = True
+        if retry_started_total is None:
+            retry_started_total = time.perf_counter()
+
+        batch = call_model(
+            client=client,
+            frame=frame,
+            context_sent=context_sent,
+            recent_comments_sent=recent_comments_sent,
+            streaming=streaming,
+            overall_started=overall_started,
+            first_visible_holder=first_visible_holder,
+            streamed_comments=streamed_comments,
+        )
+        add_metrics(timing_totals, client.last_call_metrics)
+
+    if retry_started_total is not None:
+        retry_duration_sec = round(
+            time.perf_counter() - retry_started_total,
+            3,
+        )
+
+    latency_sec = round(time.perf_counter() - overall_started, 3)
     scene_changed = context.apply_batch(batch)
 
-    return CompressionResult(
+    return StreamingResult(
         logged_at=datetime.now().isoformat(timespec="seconds"),
-        variant=variant_name(max_dimension),
+        variant=variant_name(max_dimension, streaming),
         image_max_dimension=max_dimension,
         jpeg_quality=jpeg_quality,
+        streaming=streaming,
         frame_index=frame_index,
         capture_timestamp=frame.timestamp,
         image_path=str(image_path),
-        source_width=source_width,
-        source_height=source_height,
-        source_bytes=source_bytes,
-        request_width=request_width,
-        request_height=request_height,
-        request_bytes=request_bytes,
-        request_size_ratio=round(request_bytes / source_bytes, 4),
+        source_bytes=image_path.stat().st_size,
         model=model,
         latency_sec=latency_sec,
         image_preparation_sec=round(
@@ -233,6 +240,8 @@ def generate_frame(
             timing_totals.get("end_to_end_sec", latency_sec),
             6,
         ),
+        first_visible_comment_sec=first_visible_holder[0],
+        streamed_comment_count=len(streamed_comments),
         first_attempt_sec=first_attempt_sec,
         retry_used=retry_used,
         retry_duration_sec=retry_duration_sec,
@@ -251,7 +260,7 @@ def generate_frame(
 
 
 def write_variant_log(
-    result: CompressionResult,
+    result: StreamingResult,
     variant_dir: Path,
     max_output_tokens: int,
 ) -> None:
@@ -263,12 +272,14 @@ def write_variant_log(
             "api_provider": "gemini",
             "send_screenshot_to_api": True,
             "api_max_output_tokens": max_output_tokens,
-            "use_streaming_api": False,
+            "use_streaming_api": result.streaming,
             "timing": {
                 "image_preparation_sec": result.image_preparation_sec,
                 "api_duration_sec": result.api_duration_sec,
                 "response_parsing_sec": result.response_parsing_sec,
                 "end_to_end_sec": result.end_to_end_sec,
+                "first_visible_comment_sec": result.first_visible_comment_sec,
+                "streamed_comment_count": result.streamed_comment_count,
                 "first_attempt_sec": result.first_attempt_sec,
                 "retry_used": result.retry_used,
                 "retry_duration_sec": result.retry_duration_sec,
@@ -278,23 +289,32 @@ def write_variant_log(
     append_jsonl(variant_dir / "comments.jsonl", record)
 
 
-def format_compression_comparison_cell(
-    result: CompressionResult | None,
+def format_streaming_comparison_cell(
+    result: StreamingResult | None,
 ) -> str:
     if result is None:
         return "NO RESULT"
     if not result.ok:
         return f"ERROR\n{result.error_message or 'Unknown error'}"
 
+    first_visible = (
+        f"{result.first_visible_comment_sec}s"
+        if result.first_visible_comment_sec is not None
+        else "-"
+    )
     sections = [
-        "REQUEST\n"
-        f"{result.request_width}x{result.request_height}\n"
-        f"{round(result.request_bytes / 1024, 1)} KB "
-        f"({result.request_size_ratio:.1%} of source)",
+        "MODE\n"
+        f"{'Streaming ON' if result.streaming else 'Streaming OFF'}\n"
+        f"max dimension: "
+        f"{'original' if result.image_max_dimension <= 0 else result.image_max_dimension}\n"
+        f"JPEG quality: {result.jpeg_quality}",
         "TIMING\n"
+        f"first visible comment: {first_visible}\n"
+        f"full response: {result.latency_sec}s\n"
         f"image preparation: {result.image_preparation_sec}s\n"
         f"API duration: {result.api_duration_sec}s\n"
-        f"end-to-end: {result.end_to_end_sec}s",
+        f"end-to-end: {result.end_to_end_sec}s\n"
+        f"streamed comments: {result.streamed_comment_count}",
     ]
     if result.comments:
         sections.append(
@@ -318,8 +338,8 @@ def format_compression_comparison_cell(
     return "\n\n".join(sections)
 
 
-def write_compression_quality_workbook(
-    results: list[CompressionResult],
+def write_streaming_quality_workbook(
+    results: list[StreamingResult],
     output_dir: Path,
 ) -> Path:
     try:
@@ -330,7 +350,7 @@ def write_compression_quality_workbook(
             "Run: python -m pip install -r requirements.txt"
         ) from exc
 
-    workbook_path = output_dir / "compression_quality_comparison.xlsx"
+    workbook_path = output_dir / "streaming_quality_comparison.xlsx"
     variants = list(dict.fromkeys(result.variant for result in results))
     frame_indices = sorted({result.frame_index for result in results})
     result_by_key = {
@@ -345,7 +365,7 @@ def write_compression_quality_workbook(
         workbook_path,
         {"constant_memory": True},
     )
-    worksheet = workbook.add_worksheet("Compression Comparison")
+    worksheet = workbook.add_worksheet("Streaming Comparison")
     worksheet.hide_gridlines(2)
     worksheet.freeze_panes(1, 1)
 
@@ -402,15 +422,16 @@ def write_compression_quality_workbook(
         sample = next(
             result for result in results if result.variant == variant
         )
-        label = (
+        dimension = (
             "Original"
             if sample.image_max_dimension <= 0
-            else f"{variant}px"
+            else f"{sample.image_max_dimension}px"
         )
+        mode = "Streaming ON" if sample.streaming else "Streaming OFF"
         worksheet.write(
             0,
             column,
-            f"{label}\nJPEG {sample.jpeg_quality}",
+            f"{dimension}\n{mode}\nJPEG {sample.jpeg_quality}",
             header_format,
         )
 
@@ -457,7 +478,7 @@ def write_compression_quality_workbook(
         max_lines = 12
         for column, variant in enumerate(variants, start=1):
             result = result_by_key.get((frame_index, variant))
-            text = format_compression_comparison_cell(result)
+            text = format_streaming_comparison_cell(result)
             cell_format = (
                 error_formats[stripe]
                 if result is None or not result.ok
@@ -466,9 +487,9 @@ def write_compression_quality_workbook(
             worksheet.write(row, column, text, cell_format)
             max_lines = max(max_lines, text.count("\n") + 1)
 
-        worksheet.set_row(row, min(340, max(140, max_lines * 13)))
+        worksheet.set_row(row, min(360, max(150, max_lines * 13)))
 
-    worksheet.set_row(0, 46)
+    worksheet.set_row(0, 58)
     worksheet.set_column(0, 0, 36)
     worksheet.set_column(1, len(variants), 52)
     worksheet.autofilter(
@@ -482,18 +503,16 @@ def write_compression_quality_workbook(
 
 
 def write_outputs(
-    results: list[CompressionResult],
+    results: list[StreamingResult],
     output_dir: Path,
     image_count: int,
     max_output_tokens: int,
 ) -> None:
     frame_results_path = output_dir / "frame_results.csv"
-    comments_path = output_dir / "all_comments.csv"
-    comparison_path = output_dir / "compression_comparison.csv"
-    quality_path = output_dir / "quality_review.csv"
+    comparison_path = output_dir / "streaming_comparison.csv"
     summary_path = output_dir / "run_summary.csv"
     quality_workbook_path = (
-        output_dir / "compression_quality_comparison.xlsx"
+        output_dir / "streaming_quality_comparison.xlsx"
     )
 
     fields = list(asdict(results[0]).keys())
@@ -516,69 +535,8 @@ def write_outputs(
                 row[field] = json.dumps(row[field], ensure_ascii=False)
             writer.writerow(row)
 
-    comment_rows: list[dict[str, object]] = []
-    for result in results:
-        comments = [
-            ("short", index, comment)
-            for index, comment in enumerate(result.comments, start=1)
-        ]
-        comments.extend(
-            ("long", index, comment)
-            for index, comment in enumerate(result.long_comments, start=1)
-        )
-        for comment_type, comment_index, comment in comments:
-            comment_rows.append(
-                {
-                    "variant": result.variant,
-                    "frame_index": result.frame_index,
-                    "image_path": result.image_path,
-                    "comment_type": comment_type,
-                    "comment_index": comment_index,
-                    "comment": comment,
-                    "summary": result.summary,
-                    "latency_sec": result.latency_sec,
-                    "image_preparation_sec": result.image_preparation_sec,
-                    "api_duration_sec": result.api_duration_sec,
-                    "end_to_end_sec": result.end_to_end_sec,
-                    "request_bytes": result.request_bytes,
-                }
-            )
-
-    comment_fields = [
-        "variant",
-        "frame_index",
-        "image_path",
-        "comment_type",
-        "comment_index",
-        "comment",
-        "summary",
-        "latency_sec",
-        "image_preparation_sec",
-        "api_duration_sec",
-        "end_to_end_sec",
-        "request_bytes",
-    ]
-    with comments_path.open("w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=comment_fields)
-        writer.writeheader()
-        writer.writerows(comment_rows)
-
-    quality_fields = [
-        *comment_fields,
-        "relevance_score",
-        "naturalness_score",
-        "context_score",
-        "overall_score",
-        "review_notes",
-    ]
-    with quality_path.open("w", newline="", encoding="utf-8-sig") as file:
-        writer = csv.DictWriter(file, fieldnames=quality_fields)
-        writer.writeheader()
-        for row in comment_rows:
-            writer.writerow(row)
-
     variants = list(dict.fromkeys(result.variant for result in results))
-    by_frame: dict[int, dict[str, CompressionResult]] = {}
+    by_frame: dict[int, dict[str, StreamingResult]] = {}
     for result in results:
         by_frame.setdefault(result.frame_index, {})[result.variant] = result
 
@@ -597,6 +555,7 @@ def write_outputs(
                 "frame_index": frame_index,
                 "image_path": first_result.image_path,
             }
+
             for variant in variants:
                 result = per_variant.get(variant)
                 if result is None:
@@ -604,11 +563,19 @@ def write_outputs(
                 elif not result.ok:
                     row[variant] = f"ERROR\n{result.error_message}"
                 else:
+                    first_visible = (
+                        f"{result.first_visible_comment_sec}s"
+                        if result.first_visible_comment_sec is not None
+                        else "-"
+                    )
                     sections = [
                         "TIMING\n"
+                        f"first visible comment: {first_visible}\n"
+                        f"full response: {result.latency_sec}s\n"
                         f"image preparation: {result.image_preparation_sec}s\n"
                         f"API duration: {result.api_duration_sec}s\n"
-                        f"end-to-end: {result.end_to_end_sec}s"
+                        f"end-to-end: {result.end_to_end_sec}s\n"
+                        f"streamed comments: {result.streamed_comment_count}"
                     ]
                     if result.comments:
                         sections.append(
@@ -624,9 +591,10 @@ def write_outputs(
                         )
                     sections.append(f"SUMMARY\n{result.summary or '(empty)'}")
                     row[variant] = "\n\n".join(sections)
+
             writer.writerow(row)
 
-    grouped: dict[str, list[CompressionResult]] = {}
+    grouped: dict[str, list[StreamingResult]] = {}
     for result in results:
         grouped.setdefault(result.variant, []).append(result)
 
@@ -634,17 +602,24 @@ def write_outputs(
     for variant, variant_results in grouped.items():
         successful = [result for result in variant_results if result.ok]
         latencies = sorted(result.latency_sec for result in successful)
-        request_sizes = [result.request_bytes for result in variant_results]
-        source_sizes = [result.source_bytes for result in variant_results]
+        first_visible_values = sorted(
+            result.first_visible_comment_sec
+            for result in successful
+            if result.first_visible_comment_sec is not None
+        )
         comments_generated = sum(
             len(result.comments) + len(result.long_comments)
             for result in successful
         )
+
         summary_rows.append(
             {
                 "variant": variant,
-                "image_max_dimension": variant_results[0].image_max_dimension,
+                "image_max_dimension": (
+                    variant_results[0].image_max_dimension
+                ),
                 "jpeg_quality": variant_results[0].jpeg_quality,
+                "streaming": variant_results[0].streaming,
                 "frames_expected": image_count,
                 "frames_attempted": len(variant_results),
                 "successes": len(successful),
@@ -659,72 +634,83 @@ def write_outputs(
                     if successful
                     else ""
                 ),
-                "avg_latency_sec": (
-                    round(statistics.fmean(latencies), 3) if latencies else ""
+                "avg_full_response_sec": (
+                    round(statistics.fmean(latencies), 3)
+                    if latencies
+                    else ""
                 ),
-                "median_latency_sec": (
-                    round(statistics.median(latencies), 3) if latencies else ""
+                "median_full_response_sec": (
+                    round(statistics.median(latencies), 3)
+                    if latencies
+                    else ""
                 ),
-                "p90_latency_sec": (
-                    round(percentile(latencies, 0.9), 3) if latencies else ""
+                "p90_full_response_sec": (
+                    round(percentile(latencies, 0.9), 3)
+                    if latencies
+                    else ""
                 ),
-                "min_latency_sec": min(latencies) if latencies else "",
-                "max_latency_sec": max(latencies) if latencies else "",
-                "avg_image_preparation_sec": round(
-                    statistics.fmean(
-                        result.image_preparation_sec for result in successful
-                    ),
-                    6,
-                ) if successful else "",
-                "median_image_preparation_sec": round(
-                    statistics.median(
-                        result.image_preparation_sec for result in successful
-                    ),
-                    6,
-                ) if successful else "",
-                "avg_api_duration_sec": round(
-                    statistics.fmean(
-                        result.api_duration_sec for result in successful
-                    ),
-                    3,
-                ) if successful else "",
-                "median_api_duration_sec": round(
-                    statistics.median(
-                        result.api_duration_sec for result in successful
-                    ),
-                    3,
-                ) if successful else "",
-                "avg_end_to_end_sec": round(
-                    statistics.fmean(
-                        result.end_to_end_sec for result in successful
-                    ),
-                    3,
-                ) if successful else "",
-                "median_end_to_end_sec": round(
-                    statistics.median(
-                        result.end_to_end_sec for result in successful
-                    ),
-                    3,
-                ) if successful else "",
-                "avg_source_kb": round(
-                    statistics.fmean(source_sizes) / 1024,
-                    1,
+                "min_full_response_sec": min(latencies) if latencies else "",
+                "max_full_response_sec": max(latencies) if latencies else "",
+                "avg_first_visible_comment_sec": (
+                    round(statistics.fmean(first_visible_values), 3)
+                    if first_visible_values
+                    else ""
                 ),
-                "avg_request_kb": round(
-                    statistics.fmean(request_sizes) / 1024,
-                    1,
+                "median_first_visible_comment_sec": (
+                    round(statistics.median(first_visible_values), 3)
+                    if first_visible_values
+                    else ""
                 ),
-                "request_size_ratio": round(
-                    sum(request_sizes) / sum(source_sizes),
-                    4,
+                "p90_first_visible_comment_sec": (
+                    round(percentile(first_visible_values, 0.9), 3)
+                    if first_visible_values
+                    else ""
                 ),
-                "scene_change_count": sum(
-                    result.scene_change_detected for result in successful
+                "avg_image_preparation_sec": (
+                    round(
+                        statistics.fmean(
+                            result.image_preparation_sec
+                            for result in successful
+                        ),
+                        6,
+                    )
+                    if successful
+                    else ""
+                ),
+                "avg_api_duration_sec": (
+                    round(
+                        statistics.fmean(
+                            result.api_duration_sec for result in successful
+                        ),
+                        3,
+                    )
+                    if successful
+                    else ""
+                ),
+                "avg_end_to_end_sec": (
+                    round(
+                        statistics.fmean(
+                            result.end_to_end_sec for result in successful
+                        ),
+                        3,
+                    )
+                    if successful
+                    else ""
+                ),
+                "avg_streamed_comment_count": (
+                    round(
+                        statistics.fmean(
+                            result.streamed_comment_count
+                            for result in successful
+                        ),
+                        3,
+                    )
+                    if successful
+                    else ""
                 ),
                 "retry_used_count": sum(
                     result.retry_used for result in variant_results
                 ),
-                "streaming": False,
                 "max_output_tokens": max_output_tokens,
             }
         )
@@ -738,22 +724,20 @@ def write_outputs(
         writer.writerows(summary_rows)
 
     readme = (
-        "Gemini image-compression sequence benchmark\n\n"
+        "Gemini streaming sequence benchmark\n\n"
         f"Model: {results[0].model}\n"
         f"Frames per variant: {image_count}\n"
         f"Variants: {', '.join(grouped)}\n"
-        "Streaming: disabled\n"
         f"Maximum output tokens: {max_output_tokens}\n\n"
-        "Each compression variant processes the same ordered image sequence "
-        "with an isolated rolling summary and recent-comment history.\n"
+        "Each variant processes the same ordered screenshot sequence with "
+        "an isolated rolling summary and recent-comment history. Streaming "
+        "is compared with non-streaming at each selected image dimension.\n"
     )
     (output_dir / "README.txt").write_text(readme, encoding="utf-8")
-    write_compression_quality_workbook(results, output_dir)
+    write_streaming_quality_workbook(results, output_dir)
 
     print(f"[done] wrote {frame_results_path}")
-    print(f"[done] wrote {comments_path}")
     print(f"[done] wrote {comparison_path}")
-    print(f"[done] wrote {quality_path}")
     print(f"[done] wrote {summary_path}")
     print(f"[done] wrote {quality_workbook_path}")
 
@@ -769,11 +753,22 @@ def parse_dimension(value: str) -> int:
     return dimension
 
 
+def parse_streaming_mode(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"on", "true", "1", "yes"}:
+        return True
+    if normalized in {"off", "false", "0", "no"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        "streaming mode must be 'on' or 'off'"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Replay the screenshot sequence through Gemini 3.1 Flash-Lite "
-            "using independent image-compression settings."
+            "Replay an ordered screenshot sequence through Gemini and compare "
+            "streaming versus non-streaming response latency."
         )
     )
     parser.add_argument("--model", default=DEFAULT_MODEL)
@@ -784,7 +779,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help=(
             "Maximum image dimension or 'original'. Can be repeated. "
-            "Defaults to 512, 768, 1024, and original."
+            "Defaults to original and 768."
+        ),
+    )
+    parser.add_argument(
+        "--streaming",
+        action="append",
+        type=parse_streaming_mode,
+        default=[],
+        help=(
+            "Streaming mode: on or off. Can be repeated. "
+            "Defaults to both off and on."
         ),
     )
     parser.add_argument("--jpeg-quality", type=int, default=72)
@@ -800,6 +805,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--max-output-tokens", type=int, default=512)
     parser.add_argument(
+        "--retry-count",
+        type=int,
+        default=1,
+        help="Retries after an error, using the same streaming mode.",
+    )
+    parser.add_argument(
         "--output-dir",
         default="logs/latency_benchmarks",
     )
@@ -811,30 +822,43 @@ def main() -> int:
         load_dotenv(REPO_ROOT / ".env")
 
     args = build_parser().parse_args()
-    dimensions = args.dimension or DEFAULT_DIMENSIONS
-    dimensions = list(dict.fromkeys(dimensions))
+    dimensions = list(dict.fromkeys(args.dimension or DEFAULT_DIMENSIONS))
+    streaming_modes = list(
+        dict.fromkeys(args.streaming or DEFAULT_STREAMING_MODES)
+    )
     images = collect_images(Path(args.image_dir), args.limit)
-    run_id = datetime.now().strftime("compression_%Y%m%d_%H%M%S")
+
+    run_id = datetime.now().strftime("streaming_%Y%m%d_%H%M%S")
     output_dir = Path(args.output_dir) / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
-    results: list[CompressionResult] = []
+    results: list[StreamingResult] = []
+
+    variants = [
+        (dimension, streaming)
+        for dimension in dimensions
+        for streaming in streaming_modes
+    ]
 
     print(
         f"[start] model={args.model} images={len(images)} "
-        f"variants={','.join(variant_name(item) for item in dimensions)}"
+        f"variants={','.join(variant_name(*item) for item in variants)}"
     )
     print(
-        f"[start] streaming=off jpeg_quality={args.jpeg_quality} "
-        f"max_output_tokens={args.max_output_tokens}"
+        f"[start] jpeg_quality={args.jpeg_quality} "
+        f"max_output_tokens={args.max_output_tokens} "
+        f"retry_count={args.retry_count}"
     )
 
-    for variant_index, max_dimension in enumerate(dimensions, start=1):
-        variant = variant_name(max_dimension)
+    for variant_index, (max_dimension, streaming) in enumerate(
+        variants,
+        start=1,
+    ):
+        variant = variant_name(max_dimension, streaming)
         client = build_client(
-            args.model,
-            max_dimension,
-            args.jpeg_quality,
-            args.max_output_tokens,
+            model=args.model,
+            max_dimension=max_dimension,
+            jpeg_quality=args.jpeg_quality,
+            max_output_tokens=args.max_output_tokens,
         )
         if client is None:
             return 1
@@ -842,52 +866,59 @@ def main() -> int:
         context = ModelContext()
         variant_dir = output_dir / "variants" / variant
         print(
-            f"[variant] starting {variant_index}/{len(dimensions)} "
+            f"[variant] starting {variant_index}/{len(variants)} "
             f"{variant}"
         )
 
         for frame_index, image_path in enumerate(images, start=1):
             print(
-                f"[run] variant {variant_index}/{len(dimensions)} "
+                f"[run] variant {variant_index}/{len(variants)} "
                 f"{variant} frame {frame_index}/{len(images)} "
                 f"{image_path.name}"
             )
             result = generate_frame(
-                client,
-                args.model,
-                max_dimension,
-                args.jpeg_quality,
-                image_path,
-                frame_index,
-                context,
+                client=client,
+                model=args.model,
+                max_dimension=max_dimension,
+                jpeg_quality=args.jpeg_quality,
+                streaming=streaming,
+                image_path=image_path,
+                frame_index=frame_index,
+                context=context,
+                retry_count=max(0, args.retry_count),
             )
             results.append(result)
             write_variant_log(
-                result,
-                variant_dir,
-                args.max_output_tokens,
+                result=result,
+                variant_dir=variant_dir,
+                max_output_tokens=args.max_output_tokens,
             )
             status = "ok" if result.ok else "error"
+            first_visible = (
+                f"{result.first_visible_comment_sec}s"
+                if result.first_visible_comment_sec is not None
+                else "-"
+            )
             print(
-                f"[result] {status} prep={result.image_preparation_sec}s "
+                f"[result] {status} first={first_visible} "
+                f"full={result.latency_sec}s "
                 f"api={result.api_duration_sec}s "
-                f"e2e={result.end_to_end_sec}s "
-                f"request={round(result.request_bytes / 1024, 1)}KB "
+                f"streamed={result.streamed_comment_count} "
                 f"comments={len(result.comments) + len(result.long_comments)}"
             )
 
         print(
-            f"[variant] finished {variant_index}/{len(dimensions)} "
+            f"[variant] finished {variant_index}/{len(variants)} "
             f"{variant}"
         )
 
     write_outputs(
-        results,
-        output_dir,
-        len(images),
-        args.max_output_tokens,
+        results=results,
+        output_dir=output_dir,
+        image_count=len(images),
+        max_output_tokens=args.max_output_tokens,
     )
-    print(f"[done] compression benchmark: {output_dir}")
+    print(f"[done] streaming benchmark: {output_dir}")
     return 0
 
 

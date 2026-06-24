@@ -59,10 +59,13 @@ MODEL_PRESETS = {
     ],
     "current": [
         "mistral:ministral-8b-2512",
+        "openai:gpt-5-nano",
         "openai:gpt-5.4-nano",
         "openai:gpt-5.4-mini",
         "gemini:gemini-3.5-flash",
         "gemini:gemini-2.5-flash",
+        "gemini:gemini-3.1-flash-lite",
+        "gemini:gemini-2.5-flash-lite",
         "groq:meta-llama/llama-4-scout-17b-16e-instruct",
         "groq:qwen/qwen3.6-27b",
         "anthropic:claude-haiku-4-5",
@@ -203,6 +206,248 @@ def run_once(
     )
 
 
+def checkpoint_result(
+    result: BenchmarkResult,
+    output_dir: Path,
+    result_number: int,
+) -> None:
+    """Persist one completed call so interrupted benchmarks remain usable."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    jsonl_path = output_dir / "latency_results.jsonl"
+    with jsonl_path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(asdict(result), ensure_ascii=False) + "\n")
+        file.flush()
+
+    safe_provider = re.sub(r"[^A-Za-z0-9_.-]+", "_", result.provider)
+    safe_model = re.sub(r"[^A-Za-z0-9_.-]+", "_", result.model)
+    checkpoint_dir = output_dir / "comments_by_run"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / (
+        f"{result_number:04d}_{safe_provider}_{safe_model}_"
+        f"repeat_{result.run_index}.json"
+    )
+    checkpoint_path.write_text(
+        json.dumps(asdict(result), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def format_comparison_cell(result: BenchmarkResult | None) -> str:
+    if result is None:
+        return "NO RESULT"
+    if not result.ok:
+        return f"ERROR\n{result.error_message or 'Unknown error'}"
+
+    sections: list[str] = []
+    if result.comments:
+        sections.append(
+            "COMMENTS\n"
+            + "\n".join(f"• {comment}" for comment in result.comments)
+        )
+    if result.long_comments:
+        label = (
+            "LONG COMMENT"
+            if len(result.long_comments) == 1
+            else "LONG COMMENTS"
+        )
+        sections.append(
+            label
+            + "\n"
+            + "\n".join(
+                f"• {comment}" for comment in result.long_comments
+            )
+        )
+    sections.append(f"SUMMARY\n{result.summary or '(empty)'}")
+    return "\n\n".join(sections)
+
+
+def write_quality_workbook(
+    results: list[BenchmarkResult],
+    output_dir: Path,
+) -> Path:
+    try:
+        import xlsxwriter
+    except ImportError as exc:
+        raise RuntimeError(
+            "Excel export requires XlsxWriter. "
+            "Run: python -m pip install -r requirements.txt"
+        ) from exc
+
+    workbook_path = output_dir / "comment_quality_comparison.xlsx"
+    model_keys = list(
+        dict.fromkeys((result.provider, result.model) for result in results)
+    )
+    image_run_keys = list(
+        dict.fromkeys(
+            (result.image_path, result.run_index) for result in results
+        )
+    )
+    result_by_key = {
+        (
+            result.image_path,
+            result.run_index,
+            result.provider,
+            result.model,
+        ): result
+        for result in results
+    }
+
+    workbook = xlsxwriter.Workbook(
+        workbook_path,
+        {"constant_memory": True},
+    )
+    worksheet = workbook.add_worksheet("Comment Comparison")
+    worksheet.hide_gridlines(2)
+    worksheet.freeze_panes(1, 1)
+
+    header_format = workbook.add_format(
+        {
+            "bold": True,
+            "font_color": "#FFFFFF",
+            "bg_color": "#243B53",
+            "align": "center",
+            "valign": "vcenter",
+            "text_wrap": True,
+            "border": 0,
+        }
+    )
+    screenshot_header_format = workbook.add_format(
+        {
+            "bold": True,
+            "font_color": "#FFFFFF",
+            "bg_color": "#147D8F",
+            "align": "center",
+            "valign": "vcenter",
+        }
+    )
+    screenshot_formats = [
+        workbook.add_format(
+            {
+                "bold": True,
+                "font_color": "#164E63",
+                "bg_color": color,
+                "align": "center",
+                "valign": "vcenter",
+                "text_wrap": True,
+            }
+        )
+        for color in ("#D9EEF2", "#CBE7EC")
+    ]
+    response_formats = [
+        workbook.add_format(
+            {
+                "font_color": "#1F2933",
+                "bg_color": color,
+                "align": "left",
+                "valign": "top",
+                "text_wrap": True,
+            }
+        )
+        for color in ("#F4F8FB", "#EAF1F5")
+    ]
+    error_formats = [
+        workbook.add_format(
+            {
+                "font_color": "#991B1B",
+                "bg_color": color,
+                "align": "left",
+                "valign": "top",
+                "text_wrap": True,
+            }
+        )
+        for color in ("#FEE2E2", "#FECACA")
+    ]
+
+    worksheet.write(0, 0, "Screenshot", screenshot_header_format)
+    for column, (provider, model) in enumerate(model_keys, start=1):
+        worksheet.write(
+            0,
+            column,
+            f"{provider}\n{model}",
+            header_format,
+        )
+
+    for row, (image_path, run_index) in enumerate(
+        image_run_keys,
+        start=1,
+    ):
+        stripe = (row - 1) % 2
+        path = Path(image_path)
+        row_label = f"Frame {row}\n{path.name}"
+        if any(item.run_index > 1 for item in results):
+            row_label += f"\nRepeat {run_index}"
+
+        worksheet.write_blank(
+            row,
+            0,
+            None,
+            screenshot_formats[stripe],
+        )
+        if path.is_file():
+            from PIL import Image
+
+            with Image.open(path) as source:
+                image_width, image_height = source.size
+            target_width = 240
+            target_height = 150
+            scale = min(
+                target_width / max(1, image_width),
+                target_height / max(1, image_height),
+            )
+            worksheet.insert_image(
+                row,
+                0,
+                str(path),
+                {
+                    "x_scale": scale,
+                    "y_scale": scale,
+                    "x_offset": 5,
+                    "y_offset": 5,
+                    "url": path.resolve().as_uri(),
+                    "description": row_label,
+                    "object_position": 1,
+                },
+            )
+        else:
+            worksheet.write(
+                row,
+                0,
+                row_label,
+                screenshot_formats[stripe],
+            )
+
+        max_lines = 12
+        for column, (provider, model) in enumerate(
+            model_keys,
+            start=1,
+        ):
+            result = result_by_key.get(
+                (image_path, run_index, provider, model)
+            )
+            text = format_comparison_cell(result)
+            cell_format = (
+                error_formats[stripe]
+                if result is None or not result.ok
+                else response_formats[stripe]
+            )
+            worksheet.write(row, column, text, cell_format)
+            max_lines = max(max_lines, text.count("\n") + 1)
+
+        worksheet.set_row(row, min(300, max(120, max_lines * 13)))
+
+    worksheet.set_row(0, 46)
+    worksheet.set_column(0, 0, 36)
+    worksheet.set_column(1, len(model_keys), 48)
+    worksheet.autofilter(
+        0,
+        0,
+        len(image_run_keys),
+        len(model_keys),
+    )
+    workbook.close()
+    return workbook_path
+
+
 def write_outputs(results: list[BenchmarkResult], output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     jsonl_path = output_dir / "latency_results.jsonl"
@@ -211,6 +456,9 @@ def write_outputs(results: list[BenchmarkResult], output_dir: Path) -> None:
     run_summary_path = output_dir / "run_summary.csv"
     comments_path = output_dir / "all_comments.csv"
     comments_by_run_dir = output_dir / "comments_by_run"
+    quality_workbook_path = (
+        output_dir / "comment_quality_comparison.xlsx"
+    )
 
     with jsonl_path.open("w", encoding="utf-8") as file:
         for result in results:
@@ -340,12 +588,15 @@ def write_outputs(results: list[BenchmarkResult], output_dir: Path) -> None:
         writer.writeheader()
         writer.writerows(summary_rows)
 
+    write_quality_workbook(results, output_dir)
+
     print(f"[done] wrote {jsonl_path}")
     print(f"[done] wrote {csv_path}")
     print(f"[done] wrote {summary_path}")
     print(f"[done] wrote {run_summary_path}")
     print(f"[done] wrote {comments_path}")
     print(f"[done] wrote {comments_by_run_dir}")
+    print(f"[done] wrote {quality_workbook_path}")
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -433,19 +684,30 @@ def main() -> int:
     images = collect_images(args)
     run_id = datetime.now().strftime("run_%Y%m%d_%H%M%S")
     output_dir = Path(args.output_dir) / run_id
+    output_dir.mkdir(parents=True, exist_ok=True)
     results: list[BenchmarkResult] = []
+    print(f"[start] saving incremental results to {output_dir}")
 
-    for provider, model in model_specs:
+    for model_index, (provider, model) in enumerate(
+        model_specs,
+        start=1,
+    ):
         client = build_client(provider, model, args.max_output_tokens)
 
         if client is None:
             continue
 
-        for image_path in images:
+        for image_index, image_path in enumerate(images, start=1):
             for run_index in range(1, args.repeat + 1):
-                print(f"[run] {provider}:{model} {image_path} #{run_index}")
+                print(
+                    f"[run] model {model_index}/{len(model_specs)} "
+                    f"{provider}:{model} "
+                    f"frame {image_index}/{len(images)} "
+                    f"{image_path} repeat {run_index}/{args.repeat}"
+                )
                 result = run_once(client, provider, model, image_path, run_index)
                 results.append(result)
+                checkpoint_result(result, output_dir, len(results))
                 status = "ok" if result.ok else "error"
                 print(f"[result] {status} {result.latency_sec}s")
 
